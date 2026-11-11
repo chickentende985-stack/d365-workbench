@@ -1,5 +1,5 @@
-# 自动打包：每次推送到 main，在 GitHub 的 Windows 机器上打一个包（Actions 页面下载）；
-# 推送 v 开头的标签（如 v0.2.0）时，再把包发布到 Releases。
+# 自动打包：每次推送到 main，在 GitHub 的 Windows 机器上打包，
+# 并按 app/__init__.py 里的 APP_VERSION 发布到 Releases（同一版本号再推送会覆盖那个版本的安装包）。
 name: 打包
 
 on:
@@ -31,12 +31,13 @@ jobs:
       - name: 基础测试
         run: python -m unittest discover -v tests
 
-      - name: 写入版本号（仅标签发版）
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: 读版本号
+        id: ver
         shell: bash
         run: |
-          sed -i "s/^APP_VERSION = .*/APP_VERSION = '${GITHUB_REF_NAME#v}'/" app/__init__.py
-          cat app/__init__.py
+          v=$(python -c "import app; print(app.APP_VERSION)")
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "版本 $v"
 
       - name: PyInstaller 打包
         shell: bash
@@ -76,9 +77,13 @@ jobs:
           path: D365Workbench-windows.zip
           retention-days: 30
 
-      - name: 发布到 Releases（仅标签）
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: 发布到 Releases
+        if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ steps.ver.outputs.version }}
+          name: v${{ steps.ver.outputs.version }}
+          target_commitish: ${{ github.sha }}
           files: D365Workbench-windows.zip
-          generate_release_notes: true
+          overwrite_files: true
+          body_path: RELEASE_NOTES.md

@@ -32,4 +32,4 @@ python run_app.py --web      # 用默认浏览器打开
 python -m unittest discover tests
 ```
 
-推送到 `main` 会自动打包（Actions 页面下载）；推送 `v` 开头的标签（如 `v0.2.0`）会发布到 Releases。
+推送到 `main` 会自动打包，并按 `app/__init__.py` 里的 `APP_VERSION` 发布到 Releases；改版本号就是发新版本。
