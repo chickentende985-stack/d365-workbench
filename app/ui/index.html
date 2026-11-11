@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>D365 工作台</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><span class="logo">D3</span><div><b>D365 工作台</b><small id="appVersion"></small></div></div>
+  <div class="status">
+    <span id="d365Pill" class="pill pill-muted">D365：检查中…</span>
+    <button id="btnLogin" class="btn" hidden>登录 D365</button>
+  </div>
+</header>
+
+<nav class="tabs" id="tabs">
+  <button class="tab active" data-view="machine">机器查询</button>
+  <button class="tab" data-view="excel">Excel 导入</button>
+  <button class="tab" data-view="progress">执行进度</button>
+</nav>
+
+<main>
+  <!-- 机器查询 -->
+  <section class="view" id="view-machine">
+    <form class="searchbar" id="machineForm">
+      <input id="machineInput" placeholder="输入机号，例如 SYK11005ET5C01767" autocomplete="off" spellcheck="false">
+      <button class="btn btn-primary" type="submit">查询</button>
+    </form>
+    <div class="chips" id="machineHistory"></div>
+    <div id="machineResult" class="empty">输入机号查看这台机的设备档案、所有订单、照片和 Service Ticket 齐不齐。</div>
+  </section>
+
+  <!-- Excel 导入 -->
+  <section class="view" id="view-excel" hidden>
+    <div class="toolbar">
+      <button class="btn btn-primary" id="btnPickExcel">选择 Excel…</button>
+      <input type="file" id="excelFile" accept=".xlsx,.xlsm,.csv" hidden>
+      <button class="btn" id="btnTemplate">下载导入模板</button>
+      <button class="btn" id="btnRecheck" disabled>重新检查</button>
+      <button class="btn" id="btnExport" disabled>导出检查结果</button>
+      <span class="grow"></span>
+      <span id="excelName" class="muted"></span>
+    </div>
+    <div id="excelNotice"></div>
+    <div id="excelProgress" class="progress" hidden><div></div></div>
+    <div id="excelSummary" class="summary" hidden></div>
+    <div class="filters" id="excelFilters" hidden>
+      <button class="chip active" data-filter="all">全部</button>
+      <button class="chip" data-filter="error">有错</button>
+      <button class="chip" data-filter="warn">有提醒</button>
+      <button class="chip" data-filter="ok">没问题</button>
+    </div>
+    <div class="tablewrap"><table class="grid" id="excelTable"></table></div>
+    <h3 id="jobsTitle" hidden>执行批次 <small class="muted">（没错的行按“要做的事 + 设置”合成一批；点“开始执行”就在后台跑，不用打开 D365）</small></h3>
+    <div id="jobs" class="jobs"></div>
+    <div id="excelEmpty" class="empty">先下载模板，按一行一台机填好，再点“选择 Excel”。导入后会先逐行检查：机号在不在 D365、日期对不对、Dealer 和人名能不能找到、单号是不是 Shipment PDI。</div>
+  </section>
+
+  <!-- 执行进度 -->
+  <section class="view" id="view-progress" hidden>
+    <div class="toolbar">
+      <span id="progressStatus" class="pill pill-muted">读取中…</span>
+      <button class="btn" id="btnWake" hidden>继续没做完的任务</button>
+      <span class="grow"></span>
+      <button class="btn" id="btnPause">暂停</button>
+      <button class="btn" id="btnResume">继续 / 重试当前这台</button>
+      <label class="muted" title="排查问题时打开：能看到后台的 D365 页面在做什么"><input type="checkbox" id="chkShowWorker"> 显示执行窗口</label>
+    </div>
+    <div id="progressBody" class="empty">任务在后台的 D365 页面里执行，不用你打开 D365。这里每 3 秒刷新一次进度。</div>
+    <div id="progressDialogsWrap" class="card" hidden><h3>页面弹窗（已自动点确定）</h3><ul id="progressDialogs" class="msg"></ul></div>
+    <div id="progressLogWrap" class="card" hidden><h3>执行日志</h3><pre id="progressLog" class="log"></pre></div>
+  </section>
+</main>
+
+<div id="toast" class="toast" hidden></div>
+<script src="logic.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
