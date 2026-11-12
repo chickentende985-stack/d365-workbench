@@ -368,6 +368,22 @@
   };
   const RUN = { running: ['pill-ok', '运行中'], paused: ['pill-warn', '已暂停'], completed: ['pill-muted', '已完成'], draft: ['pill-muted', '已准备，等你点开始'] };
 
+  // 后台画面：截一张执行页面的图（不用打开窗口、不会打断执行）
+  let shotLive = false;
+  let shotBusy = false;
+  async function refreshShot() {
+    if (shotBusy) return;
+    shotBusy = true;
+    try {
+      const s = await call('engine_screenshot');
+      if (!s) { $('shotInfo').textContent = '后台执行页面还没打开'; $('shotImg').removeAttribute('src'); return; }
+      $('shotImg').src = `data:image/jpeg;base64,${s.image}`;
+      $('shotInfo').textContent = `${s.time} · ${s.url.slice(0, 120)}`;
+    } catch (e) {
+      $('shotInfo').textContent = `截图失败：${errText(e)}`;
+    } finally { shotBusy = false; }
+  }
+
   async function refreshProgress() {
     if (currentView !== 'progress') return;
     const pill = $('progressStatus');
@@ -377,9 +393,11 @@
       const s = res.state;
       $('progressLog').textContent = res.log || '';
       $('progressLogWrap').hidden = !res.log;
-      $('progressDialogs').innerHTML = (res.dialogs || []).slice(-8).reverse()
+      const notes = [...(res.dialogs || []), ...(res.events || [])].sort((a, b) => String(a.time).localeCompare(String(b.time)));
+      $('progressDialogs').innerHTML = notes.slice(-10).reverse()
         .map((d) => `<li><span class="muted">${h(d.time)}</span> ${h(d.message)}</li>`).join('');
-      $('progressDialogsWrap').hidden = !(res.dialogs || []).length;
+      $('progressDialogsWrap').hidden = !notes.length;
+      if (shotLive) refreshShot();
       $('btnWake').hidden = !(s && s.status === 'running' && !res.workerRunning);
       if (!s) {
         pill.textContent = '没有任务'; pill.className = 'pill pill-muted';
@@ -415,10 +433,11 @@
       $(id).onclick = () => call('engine_control', action).then(() => setTimeout(refreshProgress, 800)).catch((e) => toast(errText(e), true));
     }
     $('btnWake').onclick = () => call('engine_wake').then(refreshProgress).catch((e) => toast(errText(e), true));
-    $('chkShowWorker').onchange = async (ev) => {
-      ev.target.disabled = true;
-      try { await call('set_show_worker', ev.target.checked); } catch (e) { toast(errText(e), true); }
-      ev.target.disabled = false;
+    $('btnShot').onclick = () => {
+      shotLive = !shotLive;
+      $('btnShot').textContent = shotLive ? '收起后台画面' : '看后台画面';
+      $('shotWrap').hidden = !shotLive;
+      if (shotLive) refreshShot();
     };
     $('machineForm').onsubmit = (ev) => { ev.preventDefault(); queryMachine($('machineInput').value); };
     $('btnPickExcel').onclick = pickExcel;
@@ -446,7 +465,6 @@
     try {
       const info = await call('app_info');
       $('appVersion').textContent = `v${info.version} · 执行引擎 v${info.engineVersion}（${info.engineOrigin}）`;
-      $('chkShowWorker').checked = info.showWorker;
       schema = await call('schema');
     } catch (e) { toast(errText(e), true); }
     refreshStatus();

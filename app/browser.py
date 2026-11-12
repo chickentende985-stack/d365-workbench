@@ -60,6 +60,9 @@ class Browser:
         self.profile = paths.data_path('browser-profile')
         self.state_file = paths.data_path('d365-session.json')
         self.dialogs = collections.deque(maxlen=30)
+        self.events = collections.deque(maxlen=30)   # 工作台自己做的处理（错误页重开等）
+        self._error_since = None
+        self._last_error_check = 0.0
         self._q = queue.Queue()
         self._pw = None
         self._ctx = None
@@ -91,13 +94,47 @@ class Browser:
                 fut.set_exception(e)
 
     def _pump(self):
-        """空闲时让 Playwright 处理页面事件（确认框、页面关闭等）。"""
+        """空闲时让 Playwright 处理页面事件（确认框、页面关闭等），并看一眼执行页面有没有卡在 D365 错误页。"""
         page = self._work_page or self._api_page
         if page is not None and not page.is_closed():
             try:
                 page.wait_for_timeout(50)
             except Exception:  # noqa: BLE001
                 pass
+        self._watch_error_page()
+
+    def _watch_error_page(self):
+        """执行页面停在 D365 的错误页（比如刚新建的单马上打开，报“记录不存在”）超过 15 秒：
+        重新打开 D365，执行引擎会从这台机当前这一步接着做。"""
+        page = self._work_page
+        now = time.time()
+        if page is None or page.is_closed() or now - self._last_error_check < 3:
+            return
+        self._last_error_check = now
+        try:
+            on_error = '/_common/error/' in page.url.lower()
+        except Exception:  # noqa: BLE001
+            return
+        if not on_error:
+            self._error_since = None
+            return
+        if self._error_since is None:
+            self._error_since = now
+            try:
+                text = page.inner_text('body', timeout=2000)[:200].replace('\n', ' ')
+            except Exception:  # noqa: BLE001
+                text = ''
+            self.events.append({'time': time.strftime('%H:%M:%S'), 'message': 'D365 显示错误页：%s' % text})
+            log.warning('执行页面停在 D365 错误页：%s %s', page.url[:150], text)
+            return
+        if now - self._error_since > 15:
+            self._error_since = None
+            self.events.append({'time': time.strftime('%H:%M:%S'), 'message': '错误页停了 15 秒，重新打开 D365 接着做'})
+            log.info('错误页超过 15 秒，重新打开 D365')
+            try:
+                page.goto(self.get_settings()['d365_url'], wait_until='domcontentloaded', timeout=60000)
+            except Exception as e:  # noqa: BLE001
+                log.warning('重新打开 D365 失败：%s', e)
 
     def _run(self, fn, timeout=300):
         fut = Future()
@@ -136,6 +173,14 @@ class Browser:
             dialog.accept()
         except Exception:  # noqa: BLE001
             pass
+
+    def _on_ctx_closed(self, ctx):
+        """浏览器被关掉了（比如手动关了执行窗口）：下次用到时重新启动。"""
+        if self._ctx is ctx:
+            log.info('浏览器被关闭，下次需要时重新启动')
+            self._ctx = None
+            self._api_page = None
+            self._work_page = None
 
     def _hook_page(self, page):
         page.on('dialog', self._on_dialog)
@@ -176,6 +221,8 @@ class Browser:
         except Exception:  # noqa: BLE001
             pass
         self._ctx.on('page', self._hook_page)
+        ctx = self._ctx
+        ctx.on('close', lambda *a: self._on_ctx_closed(ctx))
         for page in self._ctx.pages:
             self._hook_page(page)
         log.info('浏览器已启动（%s，%s）', ch or 'chromium', '显示窗口' if headed else '后台')
@@ -323,8 +370,19 @@ class Browser:
                     'orderNumber': x.get('orderNumber') or '', 'skipReason': x.get('skipReason') or '',
                 } for x in state.get('items') or []],
             }
-        return {'state': state, 'log': log_text, 'dialogs': list(self.dialogs),
+        return {'state': state, 'log': log_text, 'dialogs': list(self.dialogs), 'events': list(self.events),
                 'workerRunning': self._work_page is not None, 'headed': self._headed}
+
+    def screenshot(self):
+        """后台执行页面现在的样子（JPEG，base64）。不用打开窗口就能看到它在做什么。"""
+        def fn():
+            page = self._work_page
+            if page is None or page.is_closed():
+                return None
+            import base64
+            data = page.screenshot(type='jpeg', quality=60, timeout=10000)
+            return {'image': base64.b64encode(data).decode('ascii'), 'url': page.url, 'time': time.strftime('%H:%M:%S')}
+        return self._run(fn, timeout=30)
 
     def has_worker(self):
         page = self._work_page

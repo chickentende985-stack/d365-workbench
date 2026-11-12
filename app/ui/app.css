@@ -85,3 +85,4 @@ label input[type=checkbox] { vertical-align: -2px; }
 .updatebar { display: flex; align-items: center; gap: 12px; padding: 8px 20px; background: #e6f0fa; color: #0b4f8f; border-bottom: 1px solid #c7dbf0; font-size: 13px; }
 .updatebar .grow { flex: 1; }
 #appVersion { cursor: pointer; }
+.shot { width: 100%; border: 1px solid var(--line); border-radius: 6px; }

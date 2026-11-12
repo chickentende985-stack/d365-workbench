@@ -85,6 +85,7 @@ def existing_instance():
 class App:
     def __init__(self):
         self.settings = paths.load_settings()
+        self.settings['show_worker'] = False  # 后台画面改用截图查看，执行浏览器总是隐藏运行
         self.engine = Engine(self.settings['engine_url'])
         self.browser = Browser(lambda: self.settings, self.engine)
         self.updater = Updater(lambda: self.settings)

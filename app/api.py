@@ -74,6 +74,9 @@ class Api:
     def engine_state(self):
         return self._app.browser.engine_state()
 
+    def engine_screenshot(self):
+        return self._app.browser.screenshot()
+
     def engine_control(self, action):
         ids = {'pause': 'pause', 'resume': 'reauthorize', 'skip': 'skip'}
         if action not in ids:
