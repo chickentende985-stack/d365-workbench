@@ -82,11 +82,25 @@ class UpdaterTests(unittest.TestCase):
         self.assertTrue(is_newer('v0.10.0', '0.9.9'))
         self.assertFalse(is_newer('v0.2.1', '0.2.1'))
 
-    def test_script_quotes_paths(self):
-        from app.updater import apply_script
-        s = apply_script(123, r"C:\Users\x\AppData\Local\D365Workbench\update\v1\D365Workbench", r"C:\Users\O'Brien\文档\D365Workbench", r'C:\log.txt')
-        self.assertIn("'C:\\Users\\O''Brien\\文档\\D365Workbench'", s)
-        self.assertIn('Wait-Process -Id 123', s)
+    def test_apply_update_copies(self):
+        import tempfile
+        from app import updater as up
+        src, dst = tempfile.mkdtemp(), tempfile.mkdtemp()
+        os.makedirs(os.path.join(src, '_internal'))
+        open(os.path.join(src, up.EXE_NAME), 'w').write('new')
+        open(os.path.join(src, '_internal', 'x.txt'), 'w').write('new')
+        open(os.path.join(dst, up.EXE_NAME), 'w').write('old')
+        launched = []
+        real_exe, real_popen = sys.executable, up.subprocess.Popen
+        try:
+            sys.executable = os.path.join(src, up.EXE_NAME)
+            up.subprocess.Popen = lambda args, **kw: launched.append(args)
+            up.run_apply_update(['x', '--apply-update', dst, '--wait-pid', '0'])
+        finally:
+            sys.executable, up.subprocess.Popen = real_exe, real_popen
+        self.assertEqual(open(os.path.join(dst, up.EXE_NAME)).read(), 'new')
+        self.assertTrue(os.path.isfile(os.path.join(dst, '_internal', 'x.txt')))
+        self.assertEqual(launched[0][0], os.path.join(dst, up.EXE_NAME))
 
     def test_download(self):
         import io

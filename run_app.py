@@ -13,6 +13,10 @@ from app import paths  # noqa: E402
 
 def main():
     paths.ensure_dirs()
+    if '--apply-update' in sys.argv:  # 自动更新：新版本在替换旧版本
+        from app.updater import run_apply_update
+        run_apply_update(sys.argv)
+        return
     log = paths.setup_logging()
     try:
         from app.main import run

@@ -4,13 +4,12 @@
 流程：
 1. 启动后（之后每 6 小时）查一次 GitHub 上最新发布的版本；
 2. 比当前新就在后台下载安装包、解压到 %LOCALAPPDATA%\\D365Workbench\\update；
-3. 界面上出现“重启并更新”。点了之后，程序启动一个小的 PowerShell 脚本然后退出；
-   脚本等程序完全退出，把新文件复制到程序目录（robocopy，文件被占用会重试），再启动新版。
+3. 界面上出现“重启并更新”。点了之后，启动下载好的新版本（带 --apply-update 参数）然后自己退出；
+   新版本等旧版本完全退出，把自己整个文件夹复制到旧版本目录（文件被占用会重试），再从那里启动。
 
 程序自己下载的文件不带“来自网络”的标记，所以更新后不会再弹 SmartScreen 提醒。
 执行引擎（油猴脚本）本来就是每次启动在线取最新的，不需要走这里。
 """
-import base64
 import json
 import logging
 import os
@@ -41,26 +40,67 @@ def is_newer(remote, local=APP_VERSION):
     return parse_version(remote) > parse_version(local)
 
 
-def apply_script(pid, src, dst, log_file):
-    """生成更新脚本（PowerShell）。用 -EncodedCommand 传进去，路径里有中文、空格都没问题。"""
-    q = lambda s: "'" + str(s).replace("'", "''") + "'"  # noqa: E731 - PowerShell 单引号字符串
-    return '\n'.join([
-        "$ErrorActionPreference = 'Continue'",
-        '$log = %s' % q(log_file),
-        "function Note($t) { Add-Content -Path $log -Value ((Get-Date -Format 'HH:mm:ss') + ' ' + $t) -Encoding UTF8 }",
-        'Note "等待旧版本退出（pid %d）"' % pid,
-        'Wait-Process -Id %d -Timeout 90 -ErrorAction SilentlyContinue' % pid,
-        'Start-Sleep -Seconds 2',
-        '$ok = $false',
-        'for ($i = 0; $i -lt 15; $i++) {',
-        '  robocopy %s %s /E /IS /IT /R:3 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null' % (q(src), q(dst)),
-        '  if ($LASTEXITCODE -lt 8) { $ok = $true; break }',
-        '  Note "复制失败（robocopy $LASTEXITCODE），可能文件还被占用，重试"',
-        '  Start-Sleep -Seconds 2',
-        '}',
-        'if ($ok) { Note "新文件已复制到 %s" } else { Note "更新失败：文件一直被占用" }' % str(dst).replace('"', '`"'),
-        'Start-Process -FilePath %s' % q(os.path.join(dst, EXE_NAME)),
-    ])
+def _log_update(text):
+    try:
+        with open(paths.data_path('logs', 'update.log'), 'a', encoding='utf-8') as f:
+            f.write('%s %s\n' % (time.strftime('%Y-%m-%d %H:%M:%S'), text))
+    except OSError:
+        pass
+
+
+def _wait_pid(pid, timeout):
+    """等某个进程退出（Windows）。"""
+    if sys.platform != 'win32':
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                os.kill(pid, 0)
+            except OSError:
+                return True
+            time.sleep(0.5)
+        return False
+    import ctypes
+    synchronize = 0x00100000
+    handle = ctypes.windll.kernel32.OpenProcess(synchronize, False, pid)
+    if not handle:
+        return True  # 已经不在了
+    try:
+        return ctypes.windll.kernel32.WaitForSingleObject(handle, int(timeout * 1000)) == 0
+    finally:
+        ctypes.windll.kernel32.CloseHandle(handle)
+
+
+def run_apply_update(argv):
+    """由“新版本自己”执行的更新：等旧版本退出 → 把自己整个文件夹复制到旧版本目录 → 从旧目录启动新版本。
+
+    不用 PowerShell：公司电脑的安全软件经常拦截“程序悄悄启动隐藏的 PowerShell”这种操作。
+    """
+    dst = argv[argv.index('--apply-update') + 1]
+    pid = int(argv[argv.index('--wait-pid') + 1]) if '--wait-pid' in argv else 0
+    src = os.path.dirname(os.path.abspath(sys.executable))
+    _log_update('开始更新：%s → %s（等待旧版本 pid %s 退出）' % (src, dst, pid))
+    if pid and not _wait_pid(pid, 90):
+        _log_update('旧版本 90 秒内没有退出，继续尝试复制')
+    time.sleep(1.5)
+    last = None
+    for attempt in range(25):
+        try:
+            shutil.copytree(src, dst, dirs_exist_ok=True)
+            last = None
+            break
+        except OSError as e:  # 文件还被占用：等一下再试
+            last = e
+            time.sleep(2)
+    if last:
+        _log_update('更新失败：%s' % last)
+    else:
+        _log_update('新文件已复制完成（第 %d 次）' % (attempt + 1))
+    exe = os.path.join(dst, EXE_NAME)
+    if not os.path.isfile(exe) or last:
+        exe = os.path.join(src, EXE_NAME)  # 复制失败就先从下载目录启动新版本，至少能用
+    subprocess.Popen([exe], cwd=os.path.dirname(exe), close_fds=True,
+                     creationflags=getattr(subprocess, 'DETACHED_PROCESS', 0))
+    _log_update('已启动：%s' % exe)
 
 
 class Updater:
@@ -152,19 +192,18 @@ class Updater:
         log.info('新版本 %s 已下载好：%s', version, root)
 
     def apply(self):
-        """启动更新脚本。调用方随后要让程序退出。"""
+        """启动下载好的新版本去做替换。调用方随后要让程序退出。"""
         if not self.frozen:
             raise RuntimeError('开发模式下不能自动更新')
         if self.state['status'] != 'ready' or not self._ready_dir:
             raise RuntimeError('新版本还没下载好')
         dst = os.path.dirname(sys.executable)
-        script = apply_script(os.getpid(), self._ready_dir, dst, paths.data_path('logs', 'update.log'))
-        encoded = base64.b64encode(script.encode('utf-16-le')).decode('ascii')
-        flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0) | getattr(subprocess, 'DETACHED_PROCESS', 0)
+        new_exe = os.path.join(self._ready_dir, EXE_NAME)
         subprocess.Popen(
-            ['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-EncodedCommand', encoded],
-            creationflags=flags, close_fds=True,
+            [new_exe, '--apply-update', dst, '--wait-pid', str(os.getpid())],
+            cwd=self._ready_dir, close_fds=True,
+            creationflags=getattr(subprocess, 'DETACHED_PROCESS', 0) | getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 0),
         )
-        log.info('启动更新脚本：%s → %s', self._ready_dir, dst)
+        log.info('启动新版本做替换：%s → %s', self._ready_dir, dst)
         self._set(status='applying')
         return True
