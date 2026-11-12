@@ -326,6 +326,10 @@ class Browser:
         return {'state': state, 'log': log_text, 'dialogs': list(self.dialogs),
                 'workerRunning': self._work_page is not None, 'headed': self._headed}
 
+    def has_worker(self):
+        page = self._work_page
+        return page is not None and not page.is_closed()
+
     def ensure_worker(self):
         """确保后台执行页面开着（有未完成任务时，引擎会在页面里自动继续）。"""
         return self._run(lambda: bool(self._work()), timeout=180)
