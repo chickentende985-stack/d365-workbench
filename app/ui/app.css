@@ -91,3 +91,4 @@ label input[type=checkbox] { vertical-align: -2px; }
 .btn-dark:hover:not(:disabled) { border-color: #9fb3c8; color: #fff; }
 .btn-update { background: #f0b429; border-color: #f0b429; color: #102a43; font-weight: 600; }
 .btn-update:hover:not(:disabled) { background: #f7c948; color: #102a43; }
+.card.warn { background: var(--warn-weak); color: var(--warn); border-color: #e9c46a; }

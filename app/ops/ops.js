@@ -827,6 +827,6 @@
 
   window.__wbOps = {
     version: VERSION, step, kinds: Object.fromEntries(Object.entries(KINDS).map(([k, v]) => [k, v.steps.map(([n, s]) => ({ name: n, stage: s }))])),
-    _internal: { listFiles, findEquipment, ordersOfType, generateTicketPdf, currentUser, action, api },
+    _internal: { listFiles, findEquipment, ordersOfType, generateTicketPdf, currentUser, action, api, watermarkAndCompress },
   };
 })();

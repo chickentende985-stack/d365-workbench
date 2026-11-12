@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 
 from . import APP_NAME, APP_VERSION, excel_io, paths
 from .browser import NeedLogin
+from .ops import NATIVE_FUNCS
 
 log = logging.getLogger('workbench')
 
@@ -64,20 +65,49 @@ class Api:
         return url
 
     # ---- 后台执行 ----
-    def engine_load_job(self, job):
+    # 交机无照片、Shipment 转移：工作台内置的操作逻辑直接调 D365 接口（app/ops）；
+    # 其他还要读照片文件夹的功能暂时仍由执行引擎（油猴脚本）做。
+    def engine_load_job(self, job, dry_run=False):
         job = dict(job or {})
+        if job.get('func') in NATIVE_FUNCS:
+            if self._app.browser.has_worker() and self._engine_running():
+                raise RuntimeError('执行引擎还有任务在跑，等它做完再开始')
+            return self._app.ops.start(job, dry_run=bool(dry_run))
+        if self._app.ops.running():
+            raise RuntimeError('工作台内置任务还在跑，等它做完再开始')
         job['autoStart'] = True
         result = self._app.browser.engine_eval(ENGINE_LOAD_JS, job, timeout=180)
         log.info('送入任务：%s → %s', job.get('title'), result)
         return result
 
+    def _engine_running(self):
+        try:
+            st = self._app.browser.engine_state().get('state')
+            return bool(st and st.get('status') == 'running')
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _native_active(self):
+        snap = self._app.ops.snapshot()
+        if not snap:
+            return None
+        # 执行引擎正在跑别的任务时显示引擎的；否则显示内置任务
+        if snap['status'] != 'running' and self._app.browser.has_worker() and self._engine_running():
+            return None
+        return snap
+
     def engine_state(self):
+        snap = self._native_active()
+        if snap:
+            return {'state': snap, 'log': snap.pop('log'), 'dialogs': [], 'events': [], 'workerRunning': True, 'native': True}
         return self._app.browser.engine_state()
 
     def engine_screenshot(self):
         return self._app.browser.screenshot()
 
     def engine_control(self, action):
+        if self._native_active() or action == 'clear':
+            return self._app.ops.control(action)
         ids = {'pause': 'pause', 'resume': 'reauthorize', 'skip': 'skip'}
         if action not in ids:
             raise ValueError('不支持的操作：%s' % action)

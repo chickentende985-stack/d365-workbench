@@ -28,12 +28,35 @@ class FakeBrowser:
     def engine_state(self):
         return {'state': None, 'log': '', 'dialogs': [], 'workerRunning': False, 'headed': False}
 
+    def has_worker(self):
+        return False
+
+    def ops_step(self, source, version, kind, item, opts):
+        # 模拟 ops.js：每台三步；机号 BAD 第二步出错，机号 SKIP 第一步跳过，机号 STOP 暂停一次
+        item = dict(item)
+        step = int(item.get('step') or 0)
+        self.calls = getattr(self, 'calls', []) + [(item.get('machineNo'), step, opts['dryRun'])]
+        if item.get('machineNo') == 'SKIP':
+            item['stage'] = 'skipped'
+            item['skipReason'] = '没有 PDI'
+            return {'item': item, 'logs': ['跳过'], 'done': True}
+        if item.get('machineNo') == 'BAD' and step == 1:
+            return {'item': item, 'logs': ['出错'], 'done': False, 'error': '坏了'}
+        if item.get('machineNo') == 'STOP' and step == 1 and not item.get('paused'):
+            item['paused'] = True
+            return {'item': item, 'logs': ['要填联系人'], 'done': False, 'pause': '要填联系人'}
+        item['step'] = step + 1
+        item['stage'] = 'done' if step + 1 >= 3 else 'working'
+        return {'item': item, 'logs': ['第 %d 步' % (step + 1)], 'done': step + 1 >= 3}
+
 
 class FakeApp:
     def __init__(self):
         self.settings = paths.load_settings()
         self.engine = Engine(self.settings['engine_url'])
         self.browser = FakeBrowser()
+        from app.ops import OpsRunner
+        self.ops = OpsRunner(self.browser)
 
 
 class Tests(unittest.TestCase):
@@ -47,6 +70,48 @@ class Tests(unittest.TestCase):
         req = urllib.request.Request('%s/api/%s' % (self.base, name), data=json.dumps(list(args)).encode(), method='POST')
         with urllib.request.urlopen(req, timeout=10) as r:
             return json.loads(r.read())
+
+    def _wait_ops(self, runner, timeout=30):
+        deadline = time.time() + timeout
+        while runner.running() and time.time() < deadline:
+            time.sleep(0.05)
+        return runner.snapshot()
+
+    def test_ops_runner(self):
+        from app import ops
+        ops.RETRY_DELAY = 0  # 重试不用真等
+        b = FakeBrowser()
+        r = ops.OpsRunner(b)
+        job = {'func': 'full|handover-pdi', 'title': 't', 'fields': {'pasteMachines': 'A1 10\nSKIP\nBAD\nSTOP\na1'}}
+        r.start(job, dry_run=True)
+        snap = self._wait_ops(r)
+        self.assertEqual(snap['status'], 'paused')
+        self.assertEqual(snap['pauseReason'], '要填联系人')
+        self.assertEqual([x['stage'] for x in snap['items']], ['done', 'skipped', 'failed', 'working'])
+        self.assertEqual(len(snap['items']), 4)  # a1 和 A1 重复，只算一次
+        self.assertTrue(all(c[2] for c in b.calls))
+        self.assertIn('坏了', snap['items'][2]['error'])
+        r.control('resume')
+        snap = self._wait_ops(r)
+        self.assertEqual(snap['status'], 'completed')
+        self.assertEqual(snap['items'][3]['stage'], 'done')
+        # 存盘：重新创建 runner 能读回来
+        r2 = ops.OpsRunner(b)
+        self.assertEqual(r2.snapshot()['items'][0]['stage'], 'done')
+        r2.control('clear')
+        self.assertIsNone(ops.OpsRunner(b).snapshot())
+
+    def test_ops_parse_shipment(self):
+        from app import ops
+        kind, items = ops.parse_items({'func': 'transfer|pdi-shipment', 'fields': {'shipOrders': '5226 \n\n5227'}})
+        self.assertEqual(kind, 'shipment-transfer')
+        self.assertEqual([x['orderNumberInput'] for x in items], ['5226', '5227'])
+
+    def test_ops_js_present(self):
+        from app import ops
+        src = ops.ops_source()
+        self.assertIn('window.__wbOps', src)
+        self.assertRegex(ops.ops_version(src), r'^\d+\.\d+\.\d+$')
 
     def test_template_roundtrip(self):
         t = excel_io.read_table_bytes('t.xlsx', excel_io.template_bytes())
