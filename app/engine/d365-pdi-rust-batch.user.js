@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         D365 PDI/防锈批量建单与附件上传
 // @namespace    local.sany.d365.batch
-// @version      0.10.2
+// @version      0.10.3
 // @description  按机号打开已有 PDI/防锈订单，自动上传附件、现场完工并提交审核；服务转移模式可创建 PDI；防锈派单模式可把卡在 Created 的防锈单派给指定人员；交机模式可新建或继续完成交机单；设备变更模式可粘贴机号批量新建并提交设备变更单。
 // @author       Local
 // @updateURL    https://gist.githubusercontent.com/chickentende985-stack/34a655254f34696ae299d67386621d95/raw/d365-pdi-rust-batch.user.js
@@ -22,7 +22,7 @@
   const APP_ID = 'd365-pdi-rust-batch';
   // 面板显示的版本号：优先读取脚本管理器提供的 GM_info，取不到时使用此常量。
   // 升级 @version 时同步修改此常量，publish.sh 会检查两者一致。
-  const SCRIPT_VERSION_FALLBACK = '0.10.2';
+  const SCRIPT_VERSION_FALLBACK = '0.10.3';
   const SCRIPT_VERSION = (() => {
     try {
       return typeof GM_info !== 'undefined' && GM_info?.script?.version
@@ -1858,12 +1858,16 @@
         break;
       }
     }
+    // PDI 附件里没有 Service Ticket：和平时手动一样，从 PDI 的 Service Completion 现场生成一份（优先用已完成的 PDI）
+    let generateTicket = false;
     if (!ticketPdi) {
-      return { skipReason: `PDI 订单 ${pdis.map((x) => x[nameField]).join('、')} 里没有 Service Ticket，不做交机` };
+      ticketPdi = pdis.find((pdi) => isRustMonthFinished(pdi, model)) || pdis[0];
+      generateTicket = true;
     }
     const pdiInfo = {
       pdiOrderId: normalizeGuid(ticketPdi[idField]),
       pdiOrderNumber: ticketPdi[nameField] || '',
+      generateTicket,
     };
     if (open) {
       return {
@@ -1914,10 +1918,104 @@
   }
 
   // 每次重新查询，拿到新的下载链接。
+  // ===== 不打开页面，直接生成某张订单的 Service Ticket（PDF） =====
+  // 和订单表单 Service Completion 标签里的预览一模一样：
+  // ms_GenerateFileTemplateData 拿模板和数据 → docxtemplater 填成 Word → 传到临时存储 → mcs_convertpdf 转成 PDF。
+  // 只生成文件，不改订单。
+  async function loadServiceTicketLibs() {
+    for (const [name, ready] of [
+      ['pizzip.js', () => window.PizZip],
+      ['pizzip-utils.js', () => window.PizZipUtils],
+      ['docxtemplater.js', () => window.docxtemplater],
+      ['imagemodule.js', () => window.ImageModule],
+    ]) {
+      if (ready()) continue;
+      const res = await fetch(`/WebResources/mcs_/CommonCore/Scripts/${name}`, { credentials: 'include' });
+      if (!res.ok) throw new Error(`加载 ${name} 失败：HTTP ${res.status}`);
+      (0, eval)(await res.text()); // eslint-disable-line no-eval -- 和 D365 页面自己加载这些库一样
+    }
+  }
+
+  async function generateServiceTicketPdf(orderId, fileName) {
+    const id = normalizeGuid(orderId);
+    const { data: tpl } = await api('ms_GenerateFileTemplateData', {
+      method: 'POST',
+      body: JSON.stringify({ EntityID: id, EntityName: 'mcs_consultationorder', ActionName: 'ConsultationOrderTemplate' }),
+    });
+    const file = tpl?.File ? JSON.parse(tpl.File) : null;
+    if (!file?.Url) throw new Error('没有拿到 Service Ticket 模板');
+    const values = JSON.parse(tpl.Data || '{}');
+    // 图片：三张一行，转成 base64（和 docviewer.html 一样）
+    const mime = (n) => ({ jpg: 'image/jpg', jpeg: 'image/jpg', png: 'image/png', gif: 'image/gif', bmp: 'image/bmp' })[String(n).split('.').pop().toLowerCase()] || 'application/octet-stream';
+    const images = values.ImageData ? (JSON.parse(values.ImageData).Results || []) : [];
+    for (const img of images) {
+      const blob = await (await fetch(img.ImageUrl)).blob();
+      img.ImageBase64 = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result);
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+      });
+    }
+    const rows = [];
+    for (let i = 0; i < images.length; i += 3) {
+      const line = {};
+      for (let j = 0; j < 3; j += 1) {
+        const img = images[i + j];
+        line[`imgName_${j}`] = img ? img.Name : '';
+        line[`imgBase64_${j}`] = img ? String(img.ImageBase64).replace(/^data:.*?;base64,/, `data:${mime(img.Name)};base64,`) : '';
+        line[`imgCreateTime_${j}`] = img ? new Date(Date.parse(`${img.CreateTime}Z`)).toLocaleString() : '';
+      }
+      rows.push(line);
+    }
+    values.ImageData = rows;
+    await loadServiceTicketLibs();
+    const toBuffer = (url) => {
+      const re = /^data:image\/(png|jpg|gif|bmp|svg|svg\+xml);base64,/;
+      if (!re.test(url)) return false;
+      const bin = atob(url.replace(re, ''));
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
+      return bytes.buffer;
+    };
+    const templateRes = await fetch(new URL(file.Url, location.origin).href, { credentials: 'include' });
+    if (!templateRes.ok) throw new Error(`下载 Service Ticket 模板失败：HTTP ${templateRes.status}`);
+    const doc = new window.docxtemplater();
+    doc.loadZip(new window.PizZip(await templateRes.arrayBuffer()));
+    doc.linebreaks = true;
+    doc.attachModule(new window.ImageModule({ getImage: (tag) => toBuffer(tag), getSize: () => [100, 100] }));
+    doc.render(values);
+    const docx = doc.getZip().generate({
+      type: 'blob', compression: 'DEFLATE',
+      mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    });
+    const { data: init } = await api('mcs_inittempfile', { method: 'POST', body: '{}' });
+    const temp = JSON.parse(init.Result || '{}');
+    const put = await fetch(temp.Url, {
+      method: 'PUT', body: docx,
+      headers: { 'Content-Type': 'application/octet-stream', 'x-ms-version': '2019-12-12', 'x-ms-date': new Date().toUTCString() },
+    });
+    if (!put.ok) throw new Error(`上传 Service Ticket 草稿失败：HTTP ${put.status}`);
+    const { data: conv } = await api('mcs_convertpdf', {
+      method: 'POST', body: JSON.stringify({ FileName: temp.FileName, DisplayName: `${id}.docx` }),
+    });
+    const pdfUrl = String(conv?.Result || '').replace(/^"|"$/g, '');
+    if (!pdfUrl) throw new Error('转换 PDF 没有返回地址');
+    const pdf = await fetch(pdfUrl);
+    if (!pdf.ok) throw new Error(`下载生成的 Service Ticket 失败：HTTP ${pdf.status}`);
+    const blob = await pdf.blob();
+    if (!blob.size) throw new Error('生成的 Service Ticket 是空文件');
+    return new File([blob], fileName || `${id.toUpperCase()}.pdf`, { type: 'application/pdf' });
+  }
+
   async function downloadPdiServiceTicket(item) {
     const files = await listOrderFiles(item.pdiOrderId);
     const ticket = files.find(isServiceTicketFile);
-    if (!ticket?.FileUrl) throw new Error(`PDI 订单 ${item.pdiOrderNumber || item.pdiOrderId} 里找不到 Service Ticket`);
+    if (!ticket?.FileUrl) {
+      // PDI 附件里没有：从 PDI 的 Service Completion 生成
+      panelLog?.(`${item.machineNo}：PDI ${item.pdiOrderNumber} 附件里没有 Service Ticket，从它的 Service Completion 生成一份…`);
+      return generateServiceTicketPdf(item.pdiOrderId, `${item.pdiOrderNumber || 'Service Ticket'}.pdf`);
+    }
     const response = await fetch(ticket.FileUrl);
     if (!response.ok) throw new Error(`下载 PDI 的 Service Ticket 失败：HTTP ${response.status}`);
     const blob = await response.blob();
