@@ -598,7 +598,16 @@
       for (const spec of HANDOVER_PHOTOS) {
         if (have.has(spec.type)) continue;
         let src = newest(spec.type);
-        if (!src && spec.type === FILE.other.type) src = pickOtherPhoto(item, pdiFiles, newest);
+        if (!src && spec.type === FILE.other.type) {
+          src = pickOtherPhoto(item, pdiFiles, newest);
+          // PDI 一共就三张照片（铭牌、远照、工时照）：只能把整机远照再用一次当“其他照片”
+          if (!src && newest(FILE.far.type)) {
+            src = newest(FILE.far.type);
+            ctx.log(`PDI 里除了铭牌/远照/工时照没有别的照片，“其他照片”用整机远照再传一次`);
+          } else if (src) {
+            ctx.log(`PDI 里没有“其他照片”，选用 PDI 的 ${src.Name}（和铭牌/远照/工时照不重复）`);
+          }
+        }
         if (!src) throw new Error(`PDI ${item.pdiOrderNumber} 里没有“${spec.label}”照片，无法自动交机`);
         const blob = await download(src.FileUrl, `PDI 的“${spec.label}”`);
         ctx.log(`上传 ${spec.label}（来自 PDI 的 ${src.Name}）`);
