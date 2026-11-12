@@ -148,7 +148,11 @@
   async function patchOrder(item, ctx, payload, desc) {
     await ctx.write(`${desc}：PATCH ${JSON.stringify(payload)}`, () => api(`${ORDERS}(${guid(item.orderId)})`, {
       method: 'PATCH', headers: { 'If-Match': '*' }, body: payload,
-    }), payload.mcs_status !== undefined ? setSim(item, { status: payload.mcs_status }) : null);
+    }), () => {
+      // 演练：记下“假装写了”的字段，后面的检查当它已经有值
+      item.sim.fields = { ...(item.sim.fields || {}), ...payload };
+      if (payload.mcs_status !== undefined) item.sim.status = payload.mcs_status;
+    });
   }
 
   // 和网页一样写一条操作记录（失败不影响主流程）
@@ -691,6 +695,7 @@
   async function checkHandoverReady(item, ctx, forSubmit = false) {
     const sel = [...HANDOVER_FIELDS.map(([f]) => selectName(f)), '_mcs_salesdealer_value', 'mcs_systemrunningtime', 'mcs_isblockmachine', '_mcs_serviceorder_value'].join(',');
     const o = await readOrder(item.orderId, sel);
+    for (const [k, v] of Object.entries(item.sim.fields || {})) o[k.endsWith('@odata.bind') ? `_${k.split('@')[0]}_value` : k] = v;
     const missing = HANDOVER_FIELDS.filter(([f]) => !has(o[selectName(f)])).map(([, label]) => label);
     const problems = [];
     if (o._mcs_customer_value) {
