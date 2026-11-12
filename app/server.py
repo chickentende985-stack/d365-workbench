@@ -54,6 +54,9 @@ def make_server(api, port=0):
             self.server.last_seen = time.time()
             n = int(self.headers.get('Content-Length') or 0)
             raw = self.rfile.read(n) if n else b''
+            if self.path == '/__bye':  # 界面关闭（或刷新）时发来的
+                self.server.bye_at = self.server.last_seen
+                return self._send(200, b'ok', 'text/plain')
             if self.path == '/download/results':
                 data = json.loads(raw or b'{}')
                 return self._download(excel_io.results_bytes(data.get('headers', []), data.get('rows', [])), '检查结果.xlsx')
@@ -69,5 +72,6 @@ def make_server(api, port=0):
     httpd = ThreadingHTTPServer(('127.0.0.1', port), Handler)
     httpd.daemon_threads = True
     httpd.last_seen = time.time()
+    httpd.bye_at = 0.0
     threading.Thread(target=httpd.serve_forever, name='http', daemon=True).start()
     return httpd

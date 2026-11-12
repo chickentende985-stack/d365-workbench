@@ -456,6 +456,8 @@
     setInterval(refreshUpdate, 60000);
     // 报平安：窗口关掉后程序据此退出
     setInterval(() => fetch('/__ping').catch(() => {}), 5000);
+    // 关窗口时告诉程序（刷新页面也会发，但刷新后马上又有请求，程序就知道没关）
+    window.addEventListener('pagehide', () => { try { navigator.sendBeacon('/__bye', '1'); } catch { /* 忽略 */ } });
   }
 
   start();

@@ -3,9 +3,9 @@
 
 界面：本机起一个小网站，用 Edge 的“应用模式”打开（没有地址栏，看起来就是一个软件窗口）。
 后台：Playwright 驱动一个隐藏的 Edge 保持 D365 登录、读数据、执行任务（见 browser.py）。
-关掉工作台窗口，程序就退出：看我们启动的那个 Edge 窗口进程还在不在。
-（以前靠界面每 5 秒报平安、30 秒没消息就退出；但窗口被别的窗口挡住或最小化时，
-Edge 会把后台网页的定时器放慢到一分钟一次，程序就被误判成“窗口关了”而退出。）
+关掉工作台窗口，程序就退出：界面关闭时会主动告诉程序“再见”。
+（不能只靠“30 秒没报平安就退出”：窗口被挡住或最小化时，Edge 会把网页定时器放慢到一分钟一次；
+也不能靠 Edge 进程：Edge 启动后常把窗口交给另一个进程，我们启动的那个进程马上就结束了。）
 后台还有任务在跑时，即使窗口关了也等任务跑完再退出。
 """
 import argparse
@@ -145,10 +145,10 @@ def run(argv=None):
             if args.no_window:
                 window_closed = idle > 30
             else:
-                # 我们启动的 Edge 窗口进程结束 = 窗口关了；找不到进程（或 Edge 关窗后进程还挂着）时，
-                # 界面 15 分钟完全没消息也算关了
-                gone = proc is not None and proc.poll() is not None
-                window_closed = (gone and idle > 20) or idle > IDLE_EXIT
+                # 界面关闭时会发一个“再见”；之后 10 秒内没有新请求（不是刷新页面）就是真关了。
+                # 兜底：15 分钟完全没消息也算关了（窗口被挡住时界面最慢也会一分钟报一次平安）。
+                bye = httpd.bye_at
+                window_closed = (bye and httpd.last_seen <= bye and now - bye > 10) or idle > IDLE_EXIT
             if not window_closed:
                 closed_at = None
                 continue
