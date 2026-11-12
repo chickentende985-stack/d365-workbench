@@ -101,6 +101,26 @@ class Tests(unittest.TestCase):
         r2.control('clear')
         self.assertIsNone(ops.OpsRunner(b).snapshot())
 
+    def test_remarks(self):
+        r = self.post('remark_set', 't1|SY1', {'status': 'notdone', 'remark': '缺照片', 'machineNo': 'SY1', 'title': '交机'})
+        self.assertTrue(r['ok'])
+        self.assertEqual(self.post('remarks_get')['value']['t1|SY1']['remark'], '缺照片')
+        self.assertFalse(self.post('remark_set', 't1|SY1', {'status': 'maybe'})['ok'])
+        self.post('remark_set', 't1|SY1', {'status': '', 'remark': ''})  # 清空就删掉
+        self.assertNotIn('t1|SY1', self.post('remarks_get')['value'])
+
+    def test_export_xlsx(self):
+        body = json.dumps({'filename': '结果/1', 'headers': ['机号', '完成情况'], 'rows': [['SY1', '没完成'], ['SY2', '完成']]}).encode()
+        req = urllib.request.Request(self.base + '/download/results', data=body, method='POST')
+        with urllib.request.urlopen(req, timeout=10) as r:
+            self.assertIn('xlsx', r.headers['Content-Disposition'])
+            data = r.read()
+        import io
+        import openpyxl
+        ws = openpyxl.load_workbook(io.BytesIO(data)).active
+        self.assertEqual(ws['B2'].value, '没完成')
+        self.assertEqual(ws['A2'].fill.fgColor.rgb, '00FDE2E1')
+
     def test_ops_parse_shipment(self):
         from app import ops
         kind, items = ops.parse_items({'func': 'transfer|pdi-shipment', 'fields': {'shipOrders': '5226 \n\n5227'}})

@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """本机小网站：界面文件 + /api/<方法名>。只监听 127.0.0.1，别的电脑访问不到。"""
 import json
+import re
 import mimetypes
 import os
 import threading
@@ -59,7 +60,10 @@ def make_server(api, port=0):
                 return self._send(200, b'ok', 'text/plain')
             if self.path == '/download/results':
                 data = json.loads(raw or b'{}')
-                return self._download(excel_io.results_bytes(data.get('headers', []), data.get('rows', [])), '检查结果.xlsx')
+                name = re.sub(r'[\\/:*?"<>|]+', '_', str(data.get('filename') or '检查结果.xlsx'))
+                if not name.lower().endswith('.xlsx'):
+                    name += '.xlsx'
+                return self._download(excel_io.results_bytes(data.get('headers', []), data.get('rows', [])), name)
             if not self.path.startswith('/api/'):
                 return self._send(404, b'not found', 'text/plain')
             try:

@@ -174,6 +174,7 @@ class OpsRunner:
                 return None
             return {
                 'engine': 'native', 'status': s['status'], 'title': s.get('title'), 'dryRun': s.get('dryRun'),
+                'createdAt': s.get('createdAt', ''),
                 'currentIndex': s.get('currentIndex', 0), 'pauseReason': s.get('pauseReason', ''),
                 'items': [{
                     'machineNo': x.get('machineNo') or x.get('orderNumberInput', ''), 'stage': x.get('stage', ''),

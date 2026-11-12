@@ -163,15 +163,29 @@ def write_template(path):
 
 def write_results(path, headers, rows):
     from openpyxl import Workbook
-    from openpyxl.styles import Font
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.utils import get_column_letter
     wb = Workbook()
     ws = wb.active
     ws.title = '结果'
     ws.append(headers)
     for cell in ws[1]:
         cell.font = Font(bold=True)
+        cell.fill = PatternFill('solid', fgColor='E8EEF4')
+    red = PatternFill('solid', fgColor='FDE2E1')
+    green = PatternFill('solid', fgColor='E3F4E8')
     for row in rows:
-        ws.append(row)
+        ws.append(['' if v is None else v for v in row])
+        # 有“没完成”的一行标红，“完成”标绿，打开表格一眼能看出来
+        mark = red if '没完成' in row else green if '完成' in row else None
+        for cell in ws[ws.max_row]:
+            cell.alignment = Alignment(wrap_text=True, vertical='top')
+            if mark:
+                cell.fill = mark
+    for i, h in enumerate(headers, start=1):
+        longest = max([len(str(h))] + [len(str(r[i - 1])) for r in rows if i - 1 < len(r) and r[i - 1] is not None] or [8])
+        ws.column_dimensions[get_column_letter(i)].width = min(60, max(10, longest * 1.3 + 2))
+    ws.freeze_panes = 'A2'
     wb.save(path)
 
 

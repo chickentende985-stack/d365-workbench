@@ -92,3 +92,14 @@ label input[type=checkbox] { vertical-align: -2px; }
 .btn-update { background: #f0b429; border-color: #f0b429; color: #102a43; font-weight: 600; }
 .btn-update:hover:not(:disabled) { background: #f7c948; color: #102a43; }
 .card.warn { background: var(--warn-weak); color: var(--warn); border-color: #e9c46a; }
+
+/* 完成情况 / 备注 */
+.mini { font: inherit; font-size: 12px; padding: 2px 8px; border: 1px solid var(--line, #d0d7de); border-radius: 4px; background: #fff; cursor: pointer; white-space: nowrap; }
+.mini:hover { border-color: var(--primary); }
+.mini.on-ok { background: var(--ok-weak); color: var(--ok); border-color: var(--ok); font-weight: 600; }
+.mini.on-err { background: var(--err-weak); color: var(--err); border-color: var(--err); font-weight: 600; }
+textarea.remark { width: 100%; min-width: 200px; box-sizing: border-box; font: inherit; font-size: 13px; padding: 4px 6px; border: 1px solid var(--line, #d0d7de); border-radius: 4px; resize: vertical; }
+textarea.remark:focus { outline: 2px solid var(--primary); outline-offset: -1px; }
+.nowrap { white-space: nowrap; }
+.small { font-size: 11px; }
+#recordsFilter { display: inline-flex; gap: 4px; }

@@ -22,6 +22,7 @@
   <button class="tab active" data-view="machine">机器查询</button>
   <button class="tab" data-view="excel">Excel 导入</button>
   <button class="tab" data-view="progress">执行进度</button>
+  <button class="tab" data-view="records">完成记录</button>
 </nav>
 
 <main>
@@ -71,6 +72,7 @@
       <button class="btn" id="btnResume">继续 / 重试当前这台</button>
       <button class="btn" id="btnSkip" hidden>跳过当前这台</button>
       <button class="btn" id="btnClear" hidden>清除这个任务</button>
+      <button class="btn" id="btnExportProgress" hidden>导出结果</button>
       <button class="btn" id="btnShot">看后台画面</button>
     </div>
     <div id="pauseReason" class="card warn" hidden></div>
@@ -78,6 +80,21 @@
     <div id="shotWrap" class="card" hidden><h3>后台画面 <small class="muted" id="shotInfo"></small></h3><img id="shotImg" alt="后台画面" class="shot"></div>
     <div id="progressDialogsWrap" class="card" hidden><h3>页面弹窗（已自动点确定）</h3><ul id="progressDialogs" class="msg"></ul></div>
     <div id="progressLogWrap" class="card" hidden><h3>执行日志</h3><pre id="progressLog" class="log"></pre></div>
+  </section>
+
+  <!-- 完成记录：你在每台机后面记的完成情况和备注 -->
+  <section class="view" id="view-records" hidden>
+    <div class="toolbar">
+      <span id="recordsCount" class="muted"></span>
+      <span class="grow"></span>
+      <span id="recordsFilter">
+        <button class="btn btn-primary" data-filter="all">全部</button>
+        <button class="btn" data-filter="notdone">没完成</button>
+        <button class="btn" data-filter="done">完成</button>
+      </span>
+      <button class="btn btn-primary" id="btnExportRecords">一键导出 Excel</button>
+    </div>
+    <div id="recordsBody" class="empty">读取中…</div>
   </section>
 </main>
 

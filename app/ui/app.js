@@ -116,6 +116,7 @@
     for (const b of document.querySelectorAll('.tab')) b.classList.toggle('active', b.dataset.view === view);
     for (const v of document.querySelectorAll('.view')) v.hidden = v.id !== `view-${view}`;
     if (view === 'progress') refreshProgress();
+    if (view === 'records') refreshRecords();
   }
 
   // ---------- 机器查询 ----------
@@ -355,17 +356,24 @@
       const x = excel.results[i];
       return [r.rowNo, r.machine, r.func, keyInfo(r), x.info, LEVEL[x.level][1], x.messages.join('；')];
     });
+    await downloadXlsx('检查结果.xlsx', headers, rows);
+  }
+
+  async function downloadXlsx(filename, headers, rows) {
     try {
-      const res = await fetch('/download/results', { method: 'POST', body: JSON.stringify({ headers, rows }) });
+      const res = await fetch('/download/results', { method: 'POST', body: JSON.stringify({ filename, headers, rows }) });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const url = URL.createObjectURL(await res.blob());
       const a = document.createElement('a');
       a.href = url;
-      a.download = '检查结果.xlsx';
+      a.download = filename;
       a.click();
       setTimeout(() => URL.revokeObjectURL(url), 5000);
-      toast('已下载到“下载”文件夹');
-    } catch (e) { toast(`保存失败：${errText(e)}`, true); }
+      toast(`已导出 ${filename}，在“下载”文件夹里`);
+    } catch (e) { toast(`导出失败：${errText(e)}`, true); }
   }
+  const STATUS_TEXT = { done: '完成', notdone: '没完成', '': '进行中' };
+  const fileStamp = () => new Date().toISOString().slice(0, 16).replace(/[-:T]/g, '').replace(/^(\d{8})/, '$1-');
 
   // ---------- 执行进度 ----------
   const STAGE = {
@@ -396,6 +404,134 @@
     } finally { shotBusy = false; }
   }
 
+  // ---------- 完成情况 / 备注 ----------
+  let remarkCache = {};
+  let remarkFilter = 'all';
+  let lastProgress = null;
+  let recordsList = [];
+
+  // 导出当前任务：每台机的进度 + 你记的完成情况和备注
+  async function exportProgress() {
+    if (!lastProgress) return toast('现在没有任务可以导出', true);
+    const { s, taskKey } = lastProgress;
+    const headers = ['#', '机号 / 单号', '订单', '执行进度', '执行说明', '完成情况', '备注', '记录时间'];
+    const rows = s.items.map((x, i) => {
+      const rec = remarkCache[`${taskKey}|${x.machineNo}`] || {};
+      return [i + 1, x.machineNo, x.orderNumber || '', STAGE[x.stage] || x.stage, x.error || x.skipReason || '',
+        STATUS_TEXT[rec.status || autoStatus(x.stage)], rec.remark || '', rec.updatedAt || ''];
+    });
+    await downloadXlsx(`${s.dryRun ? '演练-' : ''}${s.title || '任务'}-结果-${fileStamp()}.xlsx`, headers, rows);
+  }
+  // 导出“完成记录”里当前筛选的全部记录
+  async function exportRecords() {
+    if (!recordsList.length) return toast('没有记录可以导出', true);
+    const headers = ['记录时间', '任务', '机号 / 单号', '订单', '执行进度', '完成情况', '备注'];
+    const rows = recordsList.map((r) => [r.updatedAt, r.title, r.machineNo, r.orderNumber, STAGE[r.stage] || r.stage || '',
+      STATUS_TEXT[r.status || autoStatus(r.stage)], r.remark]);
+    const tag = { all: '全部', notdone: '没完成', done: '完成' }[remarkFilter];
+    await downloadXlsx(`完成记录-${tag}-${fileStamp()}.xlsx`, headers, rows);
+  }
+  function orderLink(id, no) {
+    return id && !/^0{8}/.test(id) ? `<span class="link" data-open="mcs_consultationorder" data-id="${h(id)}">${h(no)}</span>` : h(no || '');
+  }
+  // 自己没选时跟着执行结果走：做完 = 完成；出错 / 跳过 = 没完成；还在做 = 空
+  function autoStatus(stage) {
+    if (stage === 'done') return 'done';
+    if (stage === 'failed' || stage === 'skipped') return 'notdone';
+    return '';
+  }
+  function remarkCells(key, info, rec) {
+    const chosen = rec?.status || '';
+    const status = chosen || autoStatus(info.stage);
+    const data = `data-key="${h(key)}" data-info="${h(JSON.stringify(info))}"`;
+    const btn = (value, text) => `<button class="mini ${status === value ? (value === 'done' ? 'on-ok' : 'on-err') : ''}" data-remark-status="${value}" ${data}
+      title="${chosen === value ? '再点一次：改回跟着执行结果自动判断' : ''}">${text}</button>`;
+    return `<td class="nowrap">${btn('done', '✓ 完成')} ${btn('notdone', '✗ 没完成')}
+        ${status === 'notdone' ? '<div><span class="badge b-err">没完成</span></div>' : ''}
+        ${chosen ? '' : status ? '<div class="muted small">自动</div>' : ''}</td>
+      <td><textarea class="remark" rows="${rec?.remark ? 2 : 1}" ${data}
+        placeholder="${status === 'notdone' ? '没完成的原因 / 遇到的问题' : '完成情况、遇到的问题…'}">${h(rec?.remark || '')}</textarea>
+        ${rec?.updatedAt ? `<div class="muted small">${h(rec.updatedAt)} 已保存</div>` : ''}</td>`;
+  }
+  const remarkTimers = new Map();
+  async function saveRemark(el, patch) {
+    const key = el.dataset.key;
+    const info = JSON.parse(el.dataset.info || '{}');
+    const old = remarkCache[key] || {};
+    const record = { ...info, status: old.status || '', remark: old.remark || '', ...patch };
+    try {
+      const saved = await call('remark_set', key, record);
+      if (saved) remarkCache[key] = saved; else delete remarkCache[key];
+    } catch (e) {
+      toast(`备注没保存上：${errText(e)}`, true);
+    }
+  }
+  function onRemarkClick(ev) {
+    const b = ev.target.closest('[data-remark-status]');
+    if (!b) return;
+    const key = b.dataset.key;
+    const value = b.dataset.remarkStatus;
+    const status = (remarkCache[key]?.status || '') === value ? '' : value;
+    saveRemark(b, { status }).then(() => {
+      if (status === 'notdone') {
+        const box = b.closest('tr').querySelector('textarea.remark');
+        refreshRemarkViews().then(() => {
+          const again = document.querySelector(`textarea.remark[data-key="${CSS.escape(key)}"]`) || box;
+          if (again && !again.value) again.focus();
+        });
+      } else {
+        refreshRemarkViews();
+      }
+    });
+  }
+  function onRemarkInput(ev) {
+    const el = ev.target;
+    if (!el.matches('textarea.remark')) return;
+    clearTimeout(remarkTimers.get(el.dataset.key));
+    remarkTimers.set(el.dataset.key, setTimeout(() => saveRemark(el, { remark: el.value }), 600));
+  }
+  function onRemarkBlur(ev) {
+    const el = ev.target;
+    if (!el.matches('textarea.remark')) return;
+    clearTimeout(remarkTimers.get(el.dataset.key));
+    saveRemark(el, { remark: el.value }); // 不马上重画：用户可能正要点同一行的“完成 / 没完成”
+  }
+  async function refreshRemarkViews() {
+    if (currentView === 'progress') await refreshProgress();
+    if (currentView === 'records') await refreshRecords();
+  }
+
+  // “完成记录”：所有任务里记过的情况，按时间倒序
+  async function refreshRecords() {
+    const body = $('recordsBody');
+    if (body.contains(document.activeElement) && document.activeElement.matches('textarea')) return;
+    try {
+      remarkCache = await call('remarks_get');
+    } catch (e) {
+      body.className = 'empty'; body.textContent = errText(e); return;
+    }
+    const rows = Object.entries(remarkCache).map(([key, r]) => ({ key, ...r }))
+      .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+    const list = rows.filter((r) => {
+      const st = r.status || autoStatus(r.stage);
+      return remarkFilter === 'all' || st === remarkFilter;
+    });
+    recordsList = list;
+    $('recordsCount').textContent = `共 ${rows.length} 条，没完成 ${rows.filter((r) => (r.status || autoStatus(r.stage)) === 'notdone').length} 条`;
+    if (!list.length) {
+      body.className = 'empty';
+      body.textContent = rows.length ? '这个筛选下没有记录。' : '还没有记录。在“执行进度”里每台机后面点“完成 / 没完成”或写备注，就会记在这里。';
+      return;
+    }
+    body.className = 'tablewrap';
+    body.innerHTML = `<table class="grid"><thead><tr><th>时间</th><th>任务</th><th>机号 / 单号</th><th>订单</th><th>完成情况</th><th style="min-width:260px">备注</th></tr></thead><tbody>
+      ${list.map((r) => {
+        const info = { machineNo: r.machineNo, orderNumber: r.orderNumber, orderId: r.orderId, title: r.title, stage: r.stage };
+        return `<tr><td class="nowrap">${h(r.updatedAt)}</td><td>${h(r.title)}</td><td class="mono">${h(r.machineNo)}</td>
+          <td class="mono">${orderLink(r.orderId, r.orderNumber)}</td>${remarkCells(r.key, info, r)}</tr>`;
+      }).join('')}</tbody></table>`;
+  }
+
   async function refreshProgress() {
     if (currentView !== 'progress') return;
     const pill = $('progressStatus');
@@ -416,6 +552,8 @@
       if (native && shotLive) $('btnShot').click();
       $('btnSkip').hidden = !(native && s && s.status !== 'completed');
       $('btnClear').hidden = !(native && s && s.status !== 'running');
+      $('btnExportProgress').hidden = !s;
+      if (!s) lastProgress = null;
       $('pauseReason').hidden = !(s && s.status === 'paused' && s.pauseReason);
       $('pauseReason').textContent = s && s.pauseReason ? `暂停原因：${s.pauseReason}` : '';
       if (!s) {
@@ -427,13 +565,21 @@
       const done = s.items.filter((x) => ['done', 'skipped', 'failed'].includes(x.stage)).length;
       pill.textContent = `${s.dryRun ? '演练 · ' : ''}${text}：${done} / ${s.items.length}`;
       pill.className = `pill ${cls}`;
+      // 正在写备注时不要重画表格，不然输入框会被刷掉
+      if (body.contains(document.activeElement) && document.activeElement.matches('textarea, input')) return;
+      remarkCache = await call('remarks_get').catch(() => remarkCache);
+      const taskKey = s.createdAt || s.title || '';
+      lastProgress = { s, taskKey };
       body.className = 'tablewrap';
-      body.innerHTML = `<table class="grid"><thead><tr><th>#</th><th>机号 / 单号</th><th>订单</th><th>进度</th><th>说明</th></tr></thead><tbody>
+      body.innerHTML = `<table class="grid"><thead><tr><th>#</th><th>机号 / 单号</th><th>订单</th><th>进度</th><th>说明</th><th>完成情况</th><th style="min-width:220px">备注</th></tr></thead><tbody>
         ${s.items.map((x, i) => {
           const badge = x.stage === 'done' ? 'b-ok' : x.stage === 'failed' ? 'b-err' : x.stage === 'skipped' ? 'b-warn' : 'b-muted';
           const current = i === s.currentIndex && s.status === 'running' ? ' ◀' : '';
-          return `<tr><td>${i + 1}</td><td class="mono">${h(x.machineNo)}${current}</td><td class="mono">${x.orderId && !/^0{8}/.test(x.orderId) ? `<span class="link" data-open="mcs_consultationorder" data-id="${h(x.orderId)}">${h(x.orderNumber)}</span>` : h(x.orderNumber)}</td>
-            <td><span class="badge ${badge}">${h(STAGE[x.stage] || x.stage)}</span></td><td>${h(x.error || x.skipReason)}</td></tr>`;
+          const key = `${taskKey}|${x.machineNo}`;
+          const info = { machineNo: x.machineNo, orderNumber: x.orderNumber, orderId: x.orderId, title: s.title || '', stage: x.stage };
+          return `<tr><td>${i + 1}</td><td class="mono">${h(x.machineNo)}${current}</td><td class="mono">${orderLink(x.orderId, x.orderNumber)}</td>
+            <td><span class="badge ${badge}">${h(STAGE[x.stage] || x.stage)}</span></td><td>${h(x.error || x.skipReason)}</td>
+            ${remarkCells(key, info, remarkCache[key])}</tr>`;
         }).join('')}</tbody></table>`;
     } catch (e) {
       pill.textContent = e.needLogin ? 'D365 未登录' : '读不到后台进度'; pill.className = 'pill pill-err';
@@ -457,6 +603,20 @@
     for (const [id, action] of [['btnPause', 'pause'], ['btnResume', 'resume'], ['btnSkip', 'skip']]) {
       $(id).onclick = () => call('engine_control', action).then(() => setTimeout(refreshProgress, 800)).catch((e) => toast(errText(e), true));
     }
+    for (const id of ['progressBody', 'recordsBody']) {
+      $(id).addEventListener('click', onRemarkClick);
+      $(id).addEventListener('input', onRemarkInput);
+      $(id).addEventListener('focusout', onRemarkBlur);
+    }
+    $('btnExportProgress').onclick = exportProgress;
+    $('btnExportRecords').onclick = exportRecords;
+    $('recordsFilter').addEventListener('click', (ev) => {
+      const b = ev.target.closest('[data-filter]');
+      if (!b) return;
+      remarkFilter = b.dataset.filter;
+      for (const x of $('recordsFilter').querySelectorAll('[data-filter]')) x.classList.toggle('btn-primary', x === b);
+      refreshRecords();
+    });
     $('btnWake').onclick = () => call('engine_wake').then(refreshProgress).catch((e) => toast(errText(e), true));
     $('btnShot').onclick = () => {
       shotLive = !shotLive;

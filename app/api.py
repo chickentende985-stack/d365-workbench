@@ -7,7 +7,7 @@ import threading
 import webbrowser
 from urllib.parse import urlparse
 
-from . import APP_NAME, APP_VERSION, excel_io, paths
+from . import APP_NAME, APP_VERSION, excel_io, paths, remarks
 from .browser import NeedLogin
 from .ops import NATIVE_FUNCS
 
@@ -122,6 +122,13 @@ class Api:
         paths.save_settings(self._app.settings)
         self._app.browser.relaunch()
         return bool(show)
+
+    # ---- 完成情况 / 备注（你自己记的）----
+    def remarks_get(self):
+        return remarks.get_all()
+
+    def remark_set(self, key, record):
+        return remarks.set_one(key, record)
 
     # ---- 自动更新 ----
     def update_status(self):
