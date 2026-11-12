@@ -1,5 +1,9 @@
 **下载：** 下面的 `D365Workbench-windows.zip`，解压后双击 `D365Workbench\D365Workbench.exe`。
 
+v0.3.3
+- 交机无照片：Equipment Usage Status 空着时自动选 Usable（和 Assessment Pass、工时一起写）
+- 因为 Equipment Usage Status 空着暂停的单，点“继续”时会补上 Usable 再接着做
+
 v0.3.2
 - 执行进度里每台机后面多了“完成情况”和“备注”：
   - “✓ 完成 / ✗ 没完成”：不点的话跟着执行结果自动判断（做完 = 完成，出错 / 跳过 = 没完成）；点了就按你选的，再点一次改回自动

@@ -12,7 +12,7 @@
  */
 (() => {
   'use strict';
-  const VERSION = '1.1.0';
+  const VERSION = '1.2.0';
   const ORDER = 'mcs_consultationorder';
   const ORDERS = 'mcs_consultationorders';
   const ZERO_GUID = '00000000-0000-0000-0000-000000000000';
@@ -36,6 +36,7 @@
   const ARRIVAL_ABNORMAL = 30;       // 异常到达
   const REASON_WEAK_SIGNAL = 20;     // Cell phone signal is weak（和以前脚本选的“手机 GPS 信号不佳”一样）
   const TRAINING_NO = 0;
+  const USAGE_USABLE = 10;           // Equipment Usage Status = Usable
 
   // 附件类型代码和英文名（Uploader 按类型给文件起的默认名）
   const FILE = {
@@ -587,8 +588,9 @@
     async fields(item, ctx) {
       const st = await orderStatus(item, ctx);
       if (st !== ST.Arrived && st !== ST.Rejected) return;
-      const o = item.sim.newOrder ? {} : await readOrder(item.orderId, 'mcs_ispassed,mcs_isneedonsitetrainingnew,mcs_existfault,mcs_acceptancepassed,mcs_systemrunningtime,mcs_handoverdate,_mcs_personnel_30_value,_mcs_engineer_value');
+      const o = item.sim.newOrder ? {} : await readOrder(item.orderId, 'mcs_ispassed,mcs_isneedonsitetrainingnew,mcs_existfault,mcs_acceptancepassed,mcs_systemrunningtime,mcs_handoverdate,_mcs_personnel_30_value,_mcs_engineer_value,mcs_equipmentusagestatus');
       const payload = {};
+      if (!has(o.mcs_equipmentusagestatus)) payload.mcs_equipmentusagestatus = USAGE_USABLE;
       if (o.mcs_ispassed !== true) payload.mcs_ispassed = true;
       if (o.mcs_isneedonsitetrainingnew !== TRAINING_NO) payload.mcs_isneedonsitetrainingnew = TRAINING_NO;
       if (o.mcs_existfault !== false) payload.mcs_existfault = false;
@@ -614,7 +616,7 @@
         const pid = eq._mcs_personnel_30_value || o._mcs_engineer_value;
         if (pid) payload['mcs_personnel_30@odata.bind'] = `/mcs_personnels(${guid(pid)})`;
       }
-      if (Object.keys(payload).length) await patchOrder(item, ctx, payload, `写入 Assessment Pass、无需培训、无故障、Check Passed、工时 ${hours}`);
+      if (Object.keys(payload).length) await patchOrder(item, ctx, payload, `写入 Assessment Pass、无需培训、无故障、Check Passed、Usable、工时 ${hours}`);
     },
 
     // 7. 照片：PDI 的铭牌、远照、工时照、其他照片（PDI 没有其他照片就从 PDI 别的图片里挑一张不重复的）
@@ -672,10 +674,12 @@
       if (st !== ST.Arrived) return;
       if (!item.sim.newOrder) {
         // 之前因为缺联系人停下的单：继续时再去客户那里找一次
-        const o = await readOrder(item.orderId, 'mcs_consultationorderid,_mcs_customer_value,mcs_equipmentcontact1,mcs_equipmentcontacttel,mcs_customercontact,mcs_telephone');
+        const o = await readOrder(item.orderId, 'mcs_consultationorderid,_mcs_customer_value,mcs_equipmentcontact1,mcs_equipmentcontacttel,mcs_customercontact,mcs_telephone,mcs_equipmentusagestatus');
         const payload = {};
         await fillContact(item, ctx, o, payload);
-        if (Object.keys(payload).length) await patchOrder(item, ctx, payload, '写入联系人');
+        // 之前因为 Equipment Usage Status 空着停下的单：继续时补上 Usable
+        if (!has(o.mcs_equipmentusagestatus)) payload.mcs_equipmentusagestatus = USAGE_USABLE;
+        if (Object.keys(payload).length) await patchOrder(item, ctx, payload, '补填联系人 / Equipment Usage Status = Usable');
         await checkHandoverReady(item, ctx);
       }
       const u = await currentUser();
