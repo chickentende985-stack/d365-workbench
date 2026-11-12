@@ -23,6 +23,7 @@ from .api import Api
 from .browser import Browser
 from .engine import Engine
 from .server import make_server
+from .updater import Updater
 
 log = logging.getLogger('workbench')
 
@@ -86,6 +87,8 @@ class App:
         self.settings = paths.load_settings()
         self.engine = Engine(self.settings['engine_url'])
         self.browser = Browser(lambda: self.settings, self.engine)
+        self.updater = Updater(lambda: self.settings)
+        self.exit_requested = False
         self.api = Api(self)
 
 
@@ -105,6 +108,8 @@ def run(argv=None):
 
     app = App()
     app.engine.refresh_async()
+    if not args.no_window:
+        app.updater.start()
     httpd = make_server(app.api, args.port)
     port = httpd.server_address[1]
     with open(paths.data_path('app.port'), 'w', encoding='ascii') as f:
@@ -125,6 +130,10 @@ def run(argv=None):
     try:
         while True:
             time.sleep(1)
+            if app.exit_requested:
+                log.info('为更新新版本退出')
+                time.sleep(1)  # 让“开始更新”的回复先送到界面
+                break
             now = time.time()
             contacted = httpd.last_seen > first_seen
             idle = now - httpd.last_seen

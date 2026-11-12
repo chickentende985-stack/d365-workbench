@@ -24,6 +24,8 @@ DEFAULT_SETTINGS = {
     'browser_channel': 'auto',
     # 后台执行时是否显示执行窗口（排查问题时打开）
     'show_worker': False,
+    # 自动更新：从这个 GitHub 仓库的 Releases 取新版本（要是公开仓库）
+    'update_repo': 'chickentende985-stack/d365-workbench',
 }
 
 

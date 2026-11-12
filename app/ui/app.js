@@ -66,6 +66,42 @@
     }
   }
 
+  // ---------- 自动更新 ----------
+  let updateApplying = false;
+  async function refreshUpdate(manual = false) {
+    if (updateApplying) return;
+    const bar = $('updateBar');
+    let u;
+    try {
+      u = manual ? await call('update_check') : await call('update_status');
+    } catch (e) {
+      if (manual) toast(`检查更新失败：${errText(e)}`, true);
+      return;
+    }
+    if (u.status === 'downloading') {
+      bar.hidden = false;
+      bar.innerHTML = `正在后台下载新版本 v${h(u.latest)}…（${u.progress}%）你可以继续正常使用。`;
+    } else if (u.status === 'ready') {
+      bar.hidden = false;
+      bar.innerHTML = `<b>新版本 v${h(u.latest)} 已准备好。</b><span class="grow"></span>
+        ${u.canApply ? '<button class="btn btn-primary btn-small" id="btnApplyUpdate">重启并更新</button>' : '<span>（开发模式不能自动更新）</span>'}`;
+      const btn = $('btnApplyUpdate');
+      if (btn) btn.onclick = applyUpdate;
+    } else {
+      bar.hidden = true;
+      if (manual) toast(u.status === 'latest' ? `已经是最新版 v${u.current}` : (u.error ? `检查更新失败：${u.error}` : '检查完了'), !!u.error && u.status === 'error');
+    }
+  }
+  async function applyUpdate() {
+    if (!confirm('现在重启并更新？\n程序会关掉，大约 10～20 秒后自动打开新版本（会出现一个新窗口，这个旧窗口可以关掉）。')) return;
+    try {
+      await call('update_apply');
+      updateApplying = true;
+      $('updateBar').innerHTML = '正在更新…新版本打开后，这个窗口可以关掉。';
+      setTimeout(() => window.close(), 3000);
+    } catch (e) { toast(errText(e), true); }
+  }
+
   // ---------- 页签 ----------
   let currentView = 'machine';
   function showView(view) {
@@ -372,6 +408,8 @@
   function bind() {
     $('tabs').addEventListener('click', (ev) => { const b = ev.target.closest('.tab'); if (b) showView(b.dataset.view); });
     $('btnLogin').onclick = login;
+    $('appVersion').title = '点这里检查更新';
+    $('appVersion').onclick = () => refreshUpdate(true);
     $('excelFile').onchange = onExcelChosen;
     for (const [id, action] of [['btnPause', 'pause'], ['btnResume', 'resume']]) {
       $(id).onclick = () => call('engine_control', action).then(() => setTimeout(refreshProgress, 800)).catch((e) => toast(errText(e), true));
@@ -414,6 +452,8 @@
     refreshStatus();
     setInterval(refreshStatus, 60000);
     setInterval(refreshProgress, 3000);
+    setTimeout(refreshUpdate, 8000);
+    setInterval(refreshUpdate, 60000);
     // 报平安：窗口关掉后程序据此退出
     setInterval(() => fetch('/__ping').catch(() => {}), 5000);
   }

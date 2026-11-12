@@ -90,6 +90,21 @@ class Api:
         self._app.browser.relaunch()
         return bool(show)
 
+    # ---- 自动更新 ----
+    def update_status(self):
+        return self._app.updater.snapshot()
+
+    def update_check(self):
+        return self._app.updater.check_and_download()
+
+    def update_apply(self):
+        from .main import task_running
+        if task_running(self._app):
+            raise RuntimeError('后台还有任务在跑，等跑完再更新')
+        self._app.updater.apply()
+        self._app.exit_requested = True
+        return True
+
     # ---- Excel ----
     def parse_excel(self, name, data_b64):
         data = base64.b64decode(data_b64)

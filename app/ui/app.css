@@ -81,3 +81,7 @@ h3 { margin: 22px 0 6px; font-size: 15px; }
 .toast.err { background: var(--err); }
 pre.log { margin: 0; max-height: 320px; overflow: auto; background: #0f1720; color: #d9e2ec; border-radius: 6px; padding: 10px 12px; font: 12px/1.5 ui-monospace, Consolas, monospace; white-space: pre-wrap; }
 label input[type=checkbox] { vertical-align: -2px; }
+
+.updatebar { display: flex; align-items: center; gap: 12px; padding: 8px 20px; background: #e6f0fa; color: #0b4f8f; border-bottom: 1px solid #c7dbf0; font-size: 13px; }
+.updatebar .grow { flex: 1; }
+#appVersion { cursor: pointer; }

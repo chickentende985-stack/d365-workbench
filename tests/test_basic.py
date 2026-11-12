@@ -73,3 +73,37 @@ class Tests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class UpdaterTests(unittest.TestCase):
+    def test_versions(self):
+        from app.updater import is_newer, parse_version
+        self.assertEqual(parse_version('v0.10.2'), (0, 10, 2))
+        self.assertTrue(is_newer('v0.10.0', '0.9.9'))
+        self.assertFalse(is_newer('v0.2.1', '0.2.1'))
+
+    def test_script_quotes_paths(self):
+        from app.updater import apply_script
+        s = apply_script(123, r"C:\Users\x\AppData\Local\D365Workbench\update\v1\D365Workbench", r"C:\Users\O'Brien\文档\D365Workbench", r'C:\log.txt')
+        self.assertIn("'C:\\Users\\O''Brien\\文档\\D365Workbench'", s)
+        self.assertIn('Wait-Process -Id 123', s)
+
+    def test_download(self):
+        import io
+        import zipfile
+        from app import updater as up
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, 'w') as z:
+            z.writestr('D365Workbench/D365Workbench.exe', b'MZ')
+            z.writestr('D365Workbench/_internal/a.txt', b'x')
+        data = buf.getvalue()
+        rel = {'tag_name': 'v99.0.0', 'body': '更新说明', 'assets': [
+            {'name': up.ASSET_NAME, 'browser_download_url': 'https://x/asset', 'size': len(data)}]}
+        u = up.Updater(lambda: {'update_repo': 'o/r'})
+        u._get = lambda url, timeout=20: io.BytesIO(json.dumps(rel).encode() if 'api.github.com' in url else data)
+        s = u.check_and_download()
+        self.assertEqual(s['status'], 'ready')
+        self.assertEqual(s['latest'], '99.0.0')
+        self.assertTrue(os.path.isfile(os.path.join(u._ready_dir, 'D365Workbench.exe')))
+        with self.assertRaises(RuntimeError):  # 开发模式不能替换
+            u.apply()
