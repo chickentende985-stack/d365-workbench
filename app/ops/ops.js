@@ -12,7 +12,7 @@
  */
 (() => {
   'use strict';
-  const VERSION = '1.0.0';
+  const VERSION = '1.1.0';
   const ORDER = 'mcs_consultationorder';
   const ORDERS = 'mcs_consultationorders';
   const ZERO_GUID = '00000000-0000-0000-0000-000000000000';
@@ -396,15 +396,52 @@
       '&$orderby=createdon desc&$top=10');
     const hit = past.find((x) => clean(x.mcs_equipmentcontact1) && looksLikePhone(x.mcs_equipmentcontacttel));
     if (hit) return { name: clean(hit.mcs_equipmentcontact1), phone: String(hit.mcs_equipmentcontacttel).trim(), source: `${accountName} 以前的订单 ${hit.mcs_name}` };
-    const contacts = await query('contacts', 'fullname,mobilephone,telephone1', `_parentcustomerid_value eq ${accountId} and statecode eq 0`, '&$orderby=modifiedon desc&$top=20');
-    for (const c of contacts) {
-      const phone = [c.mobilephone, c.telephone1].find(looksLikePhone);
-      if (clean(c.fullname) && phone) return { name: clean(c.fullname), phone: String(phone).trim(), source: `${accountName} 的联系人` };
+    const pick = (list, source) => {
+      for (const c of list) {
+        const phone = [c.mobilephone, c.telephone1, c.telephone2].find(looksLikePhone);
+        if (clean(c.fullname) && phone) return { name: clean(c.fullname), phone: String(phone).trim(), source: `${source}：${clean(c.fullname)}` };
+      }
+      return null;
+    };
+    const contacts = await query('contacts', 'fullname,mobilephone,telephone1,telephone2', `_parentcustomerid_value eq ${accountId} and statecode eq 0`, '&$orderby=modifiedon desc&$top=20');
+    const byParent = pick(contacts, `${accountName} 的联系人`);
+    if (byParent) return byParent;
+    const { data: account } = await api(`accounts(${accountId})?$select=name,mcs_legalperson,mcs_phone,telephone1,emailaddress1,websiteurl`);
+    // 同一个客户在 D365 里常有两条（销售那边一条、服务这边一条），联系人挂在销售那条下面，你没有权限打开那条客户，
+    // 但能看到联系人。所以再按客户的邮箱域名（sales@completemh.co.uk → completemh.co.uk）找同公司的联系人。
+    const domain = companyDomain(account.emailaddress1) || companyDomain(account.websiteurl);
+    if (domain) {
+      const sameCompany = await query('contacts', 'fullname,mobilephone,telephone1,telephone2',
+        `contains(emailaddress1,'@${esc(domain)}') and statecode eq 0`, '&$orderby=modifiedon desc&$top=20');
+      const hitByDomain = pick(sameCompany, `同公司邮箱（@${domain}）的联系人`);
+      if (hitByDomain) return hitByDomain;
     }
-    const { data: account } = await api(`accounts(${accountId})?$select=name,mcs_legalperson,mcs_phone,telephone1`);
     const phone = [account.mcs_phone, account.telephone1].find(looksLikePhone);
     if (phone) return { name: clean(account.mcs_legalperson) || clean(account.name), phone: String(phone).trim(), source: `客户 ${clean(account.name)} 本身` };
     return null;
+  }
+
+  // 公司自己的域名（个人邮箱 gmail 之类不算，按它找会找到别的公司的人）
+  const PUBLIC_MAIL = /^(gmail|googlemail|hotmail|outlook|live|msn|yahoo|ymail|icloud|me|aol|btinternet|bt|sky|virginmedia|talktalk|qq|163|126|sina|protonmail|gmx|mail)\./i;
+  function companyDomain(text) {
+    const m = String(text || '').trim().toLowerCase().match(/(?:@|^(?:https?:\/\/)?(?:www\.)?)([a-z0-9-]+(?:\.[a-z0-9-]+)+)/);
+    const d = m ? m[1] : '';
+    return d && !PUBLIC_MAIL.test(d) ? d : '';
+  }
+
+  // 交机单上空着的联系人 / 电话：去客户那里找到后填上
+  async function fillContact(item, ctx, o, payload) {
+    const targets = [['mcs_equipmentcontact1', 'name'], ['mcs_equipmentcontacttel', 'phone'], ['mcs_customercontact', 'name'], ['mcs_telephone', 'phone']]
+      .filter(([f]) => !clean(o[f]));
+    if (!targets.length) return;
+    const eq = (await query('mcs_equipments', 'mcs_equipmentcontact1,mcs_equipmentcontacttel,_mcs_customer_value,_mcs_actualcustomer_value', `mcs_equipmentid eq ${item.equipmentId}`))[0];
+    const found = await findCustomerContact(o, eq);
+    if (found) {
+      for (const [f, k] of targets) payload[f] = found[k];
+      ctx.log(`从${found.source} 找到联系人 ${found.name} / ${found.phone}`);
+    } else {
+      ctx.log('客户那里没找到可用的联系人和电话');
+    }
   }
 
   // ---------- 日期 ----------
@@ -492,18 +529,7 @@
       const payload = {};
       const wanted = handoverDateIso(ctx.opts.fields?.handoverDate);
       if (!sameLocalDay(o.mcs_handoverdate, wanted)) payload.mcs_handoverdate = wanted;
-      const targets = [['mcs_equipmentcontact1', 'name'], ['mcs_equipmentcontacttel', 'phone'], ['mcs_customercontact', 'name'], ['mcs_telephone', 'phone']]
-        .filter(([f]) => !clean(o[f]));
-      if (targets.length) {
-        const eq = (await query('mcs_equipments', 'mcs_equipmentcontact1,mcs_equipmentcontacttel,_mcs_customer_value,_mcs_actualcustomer_value', `mcs_equipmentid eq ${item.equipmentId}`))[0];
-        const found = await findCustomerContact(o, eq);
-        if (found) {
-          for (const [f, k] of targets) payload[f] = found[k];
-          ctx.log(`从${found.source}找到联系人 ${found.name} / ${found.phone}`);
-        } else {
-          ctx.log('客户那里没找到可用的联系人和电话');
-        }
-      }
+      await fillContact(item, ctx, o, payload);
       if (Object.keys(payload).length) await patchOrder(item, ctx, payload, '写入交机日期 / 联系人');
     },
 
@@ -644,7 +670,14 @@
     async onSite(item, ctx) {
       const st = await orderStatus(item, ctx);
       if (st !== ST.Arrived) return;
-      if (!item.sim.newOrder) await checkHandoverReady(item, ctx);
+      if (!item.sim.newOrder) {
+        // 之前因为缺联系人停下的单：继续时再去客户那里找一次
+        const o = await readOrder(item.orderId, 'mcs_consultationorderid,_mcs_customer_value,mcs_equipmentcontact1,mcs_equipmentcontacttel,mcs_customercontact,mcs_telephone');
+        const payload = {};
+        await fillContact(item, ctx, o, payload);
+        if (Object.keys(payload).length) await patchOrder(item, ctx, payload, '写入联系人');
+        await checkHandoverReady(item, ctx);
+      }
       const u = await currentUser();
       await appLog(item, ctx, LOG.onSite);
       await patchOrder(item, ctx, { mcs_status: ST.CompletionOnSite, 'mcs_systemuser@odata.bind': `/systemusers(${u.id})` }, '现场完工');
