@@ -69,8 +69,11 @@
       <span class="grow"></span>
       <button class="btn" id="btnPause">暂停</button>
       <button class="btn" id="btnResume">继续 / 重试当前这台</button>
+      <button class="btn" id="btnSkip" hidden>跳过当前这台</button>
+      <button class="btn" id="btnClear" hidden>清除这个任务</button>
       <button class="btn" id="btnShot">看后台画面</button>
     </div>
+    <div id="pauseReason" class="card warn" hidden></div>
     <div id="progressBody" class="empty">任务在后台的 D365 页面里执行，不用你打开 D365。这里每 3 秒刷新一次进度。</div>
     <div id="shotWrap" class="card" hidden><h3>后台画面 <small class="muted" id="shotInfo"></small></h3><img id="shotImg" alt="后台画面" class="shot"></div>
     <div id="progressDialogsWrap" class="card" hidden><h3>页面弹窗（已自动点确定）</h3><ul id="progressDialogs" class="msg"></ul></div>

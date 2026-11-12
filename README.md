@@ -22,6 +22,7 @@
 
 - `app/browser.py`：用 Playwright 驱动本机自带的 Edge，在后台保持 D365 登录。读数据时在 D365 同源页面里调 Web API；执行时开一个后台 D365 页面，把执行引擎（`app/engine/` 里的油猴脚本）注入进去，页面弹出的确认框自动点确定。
 - 执行引擎每次启动会去 Gist 取最新版（和油猴同一份），取不到就用缓存或程序自带的。
+- `app/ops/`：工作台内置的操作逻辑。`ops.js` 在后台 D365 页面里直接调 D365 接口做每一步（交机无照片、Shipment 转移），`__init__.py` 负责排队、存盘、暂停/继续/跳过。支持演练模式（只读）。以后其他功能也逐步搬进来，最终不再需要执行引擎。
 - `app/server.py`：本机小网站（只监听 127.0.0.1），界面在 `app/ui/`，通过 `POST /api/<方法名>` 调 `app/api.py`。
 - 数据都在 `%LOCALAPPDATA%\D365Workbench`：`browser-profile` 是登录状态，`logs\app.log` 是日志。
 

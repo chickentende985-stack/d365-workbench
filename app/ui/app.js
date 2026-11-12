@@ -322,23 +322,26 @@
         <pre>${h(job.lines.join('\n'))}</pre>
         ${job.needsFolder
           ? '<div class="hint">这个功能要读照片文件夹，后台执行下一版支持；现在请继续用浏览器里的油猴脚本做这几台。</div>'
-          : `<div><button class="btn ${excel.sent.has(i) ? '' : 'btn-primary'}" data-job="${i}">${excel.sent.has(i) ? '已开始（再执行一次）' : '开始执行'}</button></div>`}
+          : `<div><button class="btn ${excel.sent.has(i) ? '' : 'btn-primary'}" data-job="${i}">${excel.sent.has(i) ? '已开始（再执行一次）' : '开始执行'}</button>
+             ${NATIVE.has(job.func) ? `<button class="btn" data-job="${i}" data-dry="1" title="只读数据，把每一步要写什么列在日志里，不改 D365">先演练一遍（不改 D365）</button>
+             <span class="muted">工作台内置操作，直接调 D365 接口</span>` : ''}</div>`}
       </div>`).join('');
   }
 
-  async function sendJob(index) {
+  async function sendJob(index, dryRun = false) {
     const job = excel.jobs[index];
-    if (!confirm(`后台开始执行：${job.title}\n共 ${job.lines.length} ${job.func === 'transfer|pdi-shipment' ? '张单' : '台机'}。\n\n确定开始？`)) return;
+    const unit = job.func === 'transfer|pdi-shipment' ? '张单' : '台机';
+    if (!dryRun && !confirm(`后台开始执行：${job.title}\n共 ${job.lines.length} ${unit}。\n\n确定开始？`)) return;
     const btn = document.querySelector(`[data-job="${index}"]`);
     if (btn) { btn.disabled = true; btn.textContent = '正在送到后台…'; }
     try {
       const res = await call('engine_load_job', {
         func: job.func, title: job.title, build: job.build || '', fields: job.fields,
-      });
+      }, dryRun);
       if (!res?.ok) { toast(res?.error || '后台没有接收', true); renderJobs(); return; }
-      excel.sent.add(index);
+      if (!dryRun) excel.sent.add(index);
       renderJobs();
-      toast('已在后台开始执行，进度在“执行进度”里看');
+      toast(dryRun ? '开始演练：只读数据，看“执行日志”里每一步会写什么' : '已在后台开始执行，进度在“执行进度”里看');
       showView('progress');
     } catch (e) {
       toast(`送到后台失败：${errText(e)}`, true);
@@ -372,7 +375,9 @@
     'rust-fields': '填写防锈', 'rust-completing': '防锈收尾', 'handover-preparing': '准备交机', 'handover-fields': '填写交机',
     'handover-completing': '交机收尾', 'dispatch-checking': '检查派单', 'dispatch-submitting': '提交派单',
     'dealer-assign-submitting': 'Assign 派单', transitioning: '切换状态',
+    accepting: '接单', 'setting-off': '出发', arriving: '到达', ticket: '上传 Service Ticket', submitting: '提交审核', retry: '重做',
   };
+  const NATIVE = new Set(['full|handover-pdi', 'transfer|pdi-shipment']);
   const RUN = { running: ['pill-ok', '运行中'], paused: ['pill-warn', '已暂停'], completed: ['pill-muted', '已完成'], draft: ['pill-muted', '已准备，等你点开始'] };
 
   // 后台画面：截一张执行页面的图（不用打开窗口、不会打断执行）
@@ -406,6 +411,13 @@
       $('progressDialogsWrap').hidden = !notes.length;
       if (shotLive) refreshShot();
       $('btnWake').hidden = !(s && s.status === 'running' && !res.workerRunning);
+      const native = Boolean(res.native);
+      $('btnShot').hidden = native;
+      if (native && shotLive) $('btnShot').click();
+      $('btnSkip').hidden = !(native && s && s.status !== 'completed');
+      $('btnClear').hidden = !(native && s && s.status !== 'running');
+      $('pauseReason').hidden = !(s && s.status === 'paused' && s.pauseReason);
+      $('pauseReason').textContent = s && s.pauseReason ? `暂停原因：${s.pauseReason}` : '';
       if (!s) {
         pill.textContent = '没有任务'; pill.className = 'pill pill-muted';
         body.className = 'empty'; body.textContent = '后台现在没有任务。在“Excel 导入”里检查完，点批次上的“开始执行”。';
@@ -413,14 +425,14 @@
       }
       const [cls, text] = RUN[s.status] || ['pill-muted', s.status];
       const done = s.items.filter((x) => ['done', 'skipped', 'failed'].includes(x.stage)).length;
-      pill.textContent = `${text}：${done} / ${s.items.length}`;
+      pill.textContent = `${s.dryRun ? '演练 · ' : ''}${text}：${done} / ${s.items.length}`;
       pill.className = `pill ${cls}`;
       body.className = 'tablewrap';
       body.innerHTML = `<table class="grid"><thead><tr><th>#</th><th>机号 / 单号</th><th>订单</th><th>进度</th><th>说明</th></tr></thead><tbody>
         ${s.items.map((x, i) => {
           const badge = x.stage === 'done' ? 'b-ok' : x.stage === 'failed' ? 'b-err' : x.stage === 'skipped' ? 'b-warn' : 'b-muted';
           const current = i === s.currentIndex && s.status === 'running' ? ' ◀' : '';
-          return `<tr><td>${i + 1}</td><td class="mono">${h(x.machineNo)}${current}</td><td class="mono">${h(x.orderNumber)}</td>
+          return `<tr><td>${i + 1}</td><td class="mono">${h(x.machineNo)}${current}</td><td class="mono">${x.orderId && !/^0{8}/.test(x.orderId) ? `<span class="link" data-open="mcs_consultationorder" data-id="${h(x.orderId)}">${h(x.orderNumber)}</span>` : h(x.orderNumber)}</td>
             <td><span class="badge ${badge}">${h(STAGE[x.stage] || x.stage)}</span></td><td>${h(x.error || x.skipReason)}</td></tr>`;
         }).join('')}</tbody></table>`;
     } catch (e) {
@@ -438,7 +450,11 @@
     $('btnCheckUpdate').onclick = () => refreshUpdate(true);
     $('btnApplyUpdateTop').onclick = applyUpdate;
     $('excelFile').onchange = onExcelChosen;
-    for (const [id, action] of [['btnPause', 'pause'], ['btnResume', 'resume']]) {
+    $('btnClear').onclick = () => {
+      if (!confirm('清除这个任务的进度记录？（不会改 D365 里的任何东西）')) return;
+      call('engine_control', 'clear').then(() => setTimeout(refreshProgress, 300)).catch((e) => toast(errText(e), true));
+    };
+    for (const [id, action] of [['btnPause', 'pause'], ['btnResume', 'resume'], ['btnSkip', 'skip']]) {
       $(id).onclick = () => call('engine_control', action).then(() => setTimeout(refreshProgress, 800)).catch((e) => toast(errText(e), true));
     }
     $('btnWake').onclick = () => call('engine_wake').then(refreshProgress).catch((e) => toast(errText(e), true));
@@ -457,7 +473,7 @@
       const b = ev.target.closest('.chip');
       if (b && excel) { excel.filter = b.dataset.filter; renderExcel(); }
     });
-    $('jobs').addEventListener('click', (ev) => { const b = ev.target.closest('[data-job]'); if (b) sendJob(Number(b.dataset.job)); });
+    $('jobs').addEventListener('click', (ev) => { const b = ev.target.closest('[data-job]'); if (b) sendJob(Number(b.dataset.job), b.dataset.dry === '1'); });
     // 点机号 → 跳到机器查询；点单号 → 在 D365 窗口打开
     document.addEventListener('click', (ev) => {
       const s = ev.target.closest('[data-serial]');

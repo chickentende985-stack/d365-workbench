@@ -343,6 +343,19 @@ class Browser:
         except NeedLogin as e:
             return {'loggedIn': False, 'error': str(e)}
 
+    def ops_step(self, source, version, kind, item, opts, timeout=900):
+        """内置操作：在读数据用的 D365 页面里做一步（见 app/ops/ops.js）。不打开订单页面、不点按钮。"""
+        def fn():
+            page = self._api()
+            if page.evaluate('() => window.__wbOps && window.__wbOps.version') != version:
+                page.evaluate('(src) => { (0, eval)(src); return true; }', source)
+            try:
+                return page.evaluate('([k, i, o]) => window.__wbOps.step(k, i, o)', [kind, item, opts])
+            except Exception:
+                self._api_page = None  # 页面出问题了：下次重新打开
+                raise
+        return self._run(fn, timeout=timeout)
+
     def engine_eval(self, js_function, arg=None, timeout=120):
         """在后台的 D365 执行页面里执行一段函数，例如 '(job) => window.__d365BatchBridge.loadJob(job)'。"""
         return self._run(lambda: self._work().evaluate(js_function, arg), timeout=timeout)

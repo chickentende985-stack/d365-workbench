@@ -46,6 +46,7 @@ jobs:
           --name D365Workbench
           --add-data "app/ui;app/ui"
           --add-data "app/engine;app/engine"
+          --add-data "app/ops/ops.js;app/ops"
           --hidden-import app.main
           --collect-all playwright
           run_app.py

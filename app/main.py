@@ -22,6 +22,7 @@ from . import APP_VERSION, paths
 from .api import Api
 from .browser import Browser
 from .engine import Engine
+from .ops import OpsRunner
 from .server import make_server
 from .updater import Updater
 
@@ -60,6 +61,8 @@ def open_window(url):
 
 
 def task_running(app):
+    if app.ops.running():
+        return True
     if not app.browser.has_worker():  # 后台执行页面都没开过，就不可能有任务在跑（也别为了检查去启动浏览器）
         return False
     try:
@@ -92,6 +95,7 @@ class App:
         self.engine = Engine(self.settings['engine_url'])
         self.browser = Browser(lambda: self.settings, self.engine)
         self.updater = Updater(lambda: self.settings)
+        self.ops = OpsRunner(self.browser)
         self.exit_requested = False
         self.api = Api(self)
 
