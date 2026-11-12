@@ -430,7 +430,7 @@
     ['mcs_warrantypolicymonth', 'Warranty Policy (Month)'], ['mcs_equipmentcontact1', 'Equipment Contact'],
     ['mcs_equipmentcontacttel', 'Equipment Contact Phone'],
   ];
-  const lookupField = (f) => ['mcs_engineer', 'mcs_productgroupid', 'mcs_model', 'mcs_customer', 'mcs_personnel_30', 'mcs_country', 'mcs_salesdealer'].includes(f);
+  const lookupField = (f) => ['mcs_engineer', 'mcs_productgroupid', 'mcs_customer', 'mcs_personnel_30', 'mcs_country', 'mcs_salesdealer'].includes(f);
   const selectName = (f) => (lookupField(f) ? `_${f}_value` : f);
   const has = (v) => v !== null && v !== undefined && String(v).trim() !== '';
 
