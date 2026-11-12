@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         D365 PDI/防锈批量建单与附件上传
 // @namespace    local.sany.d365.batch
-// @version      0.10.3
+// @version      0.10.4
 // @description  按机号打开已有 PDI/防锈订单，自动上传附件、现场完工并提交审核；服务转移模式可创建 PDI；防锈派单模式可把卡在 Created 的防锈单派给指定人员；交机模式可新建或继续完成交机单；设备变更模式可粘贴机号批量新建并提交设备变更单。
 // @author       Local
 // @updateURL    https://gist.githubusercontent.com/chickentende985-stack/34a655254f34696ae299d67386621d95/raw/d365-pdi-rust-batch.user.js
@@ -22,7 +22,7 @@
   const APP_ID = 'd365-pdi-rust-batch';
   // 面板显示的版本号：优先读取脚本管理器提供的 GM_info，取不到时使用此常量。
   // 升级 @version 时同步修改此常量，publish.sh 会检查两者一致。
-  const SCRIPT_VERSION_FALLBACK = '0.10.3';
+  const SCRIPT_VERSION_FALLBACK = '0.10.4';
   const SCRIPT_VERSION = (() => {
     try {
       return typeof GM_info !== 'undefined' && GM_info?.script?.version
@@ -62,7 +62,9 @@
   }
   const ORDER_ENTITY = 'mcs_consultationorder';
   const EQUIPMENT_ENTITY = 'mcs_equipment';
-  const APP_ID_VALUE = '56ae5a6d-f8ff-ee11-9f8a-6045bd8c9cf2';
+  // 备用应用编号（地址栏没有 appid、也没记住时才用）：SANY 的 Dynamics 365 After-Sales Service。
+  // 以前写的 56ae5a6d… 在这个 D365 里不存在，打开订单会报“Record Is Unavailable / App Module is invalid”。
+  const APP_ID_VALUE = '686a745d-1b06-ef11-9f8b-6045bd8c985b';
   const FORM_ID = '4f3260a5-1006-4d93-8d2b-d79dbcb8ee0b';
   const PAGE_STALL_MS = 60 * 1000;
 
@@ -216,9 +218,25 @@
     localStorage.removeItem(STATE_KEY);
   }
 
+  // 地址栏里还没有 appid 时（比如刚打开 main.aspx），问 D365 当前是哪个应用，记下来
+  function rememberAppIdFromXrm(tries = 15) {
+    try {
+      const props = window.Xrm?.Utility?.getGlobalContext?.()?.getCurrentAppProperties?.();
+      if (props && typeof props.then === 'function') {
+        props.then((p) => {
+          const id = normalizeGuid(p?.appId);
+          if (/^[0-9a-f-]{36}$/.test(id)) localStorage.setItem(CURRENT_APP_KEY, id);
+        }).catch(() => {});
+        return;
+      }
+    } catch { /* Xrm 还没准备好 */ }
+    if (tries > 0) setTimeout(() => rememberAppIdFromXrm(tries - 1), 2000);
+  }
+
   function rememberCurrentAppId() {
     if (/\/error\/errorhandler\.aspx/i.test(location.pathname)) return;
     const value = normalizeGuid(new URLSearchParams(location.search).get('appid'));
+    if (!/^[0-9a-f-]{36}$/.test(value)) rememberAppIdFromXrm();
     if (/^[0-9a-f-]{36}$/.test(value)) localStorage.setItem(CURRENT_APP_KEY, value);
   }
 

@@ -86,6 +86,9 @@ class App:
     def __init__(self):
         self.settings = paths.load_settings()
         self.settings['show_worker'] = False  # 后台画面改用截图查看，执行浏览器总是隐藏运行
+        # D365 地址要带上应用编号（appid），否则执行引擎打开订单时会用错应用，报“Record Is Unavailable”
+        if 'appid=' not in self.settings['d365_url']:
+            self.settings['d365_url'] = paths.DEFAULT_SETTINGS['d365_url']
         self.engine = Engine(self.settings['engine_url'])
         self.browser = Browser(lambda: self.settings, self.engine)
         self.updater = Updater(lambda: self.settings)

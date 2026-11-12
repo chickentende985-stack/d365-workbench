@@ -16,7 +16,7 @@ APP_DIR = os.path.join(RES_DIR, 'app')
 
 DEFAULT_SETTINGS = {
     # 公司的 D365 地址
-    'd365_url': 'https://sany.crm4.dynamics.com/main.aspx',
+    'd365_url': 'https://sany.crm4.dynamics.com/main.aspx?appid=686a745d-1b06-ef11-9f8b-6045bd8c985b',
     # 执行引擎（就是油猴里那个脚本）的在线地址：每次启动先取最新版，取不到就用缓存或程序自带的
     'engine_url': 'https://gist.githubusercontent.com/chickentende985-stack/'
                   '34a655254f34696ae299d67386621d95/raw/d365-pdi-rust-batch.user.js',
