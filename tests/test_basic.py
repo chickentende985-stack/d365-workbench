@@ -121,3 +121,28 @@ class UpdaterTests(unittest.TestCase):
         self.assertTrue(os.path.isfile(os.path.join(u._ready_dir, 'D365Workbench.exe')))
         with self.assertRaises(RuntimeError):  # 开发模式不能替换
             u.apply()
+
+
+class UpdaterNewerReleaseTest(unittest.TestCase):
+    def test_redownload_when_newer_release(self):
+        import io
+        import zipfile
+        from app import updater as up
+        def make(tag):
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, 'w') as z:
+                z.writestr('D365Workbench/D365Workbench.exe', tag)
+            return buf.getvalue()
+        rel = {'tag_name': 'v98.0.0'}
+        u = up.Updater(lambda: {'update_repo': 'o/r'})
+        def get(url, timeout=20):
+            data = make(rel['tag_name'])
+            if 'api.github.com' in url:
+                return io.BytesIO(json.dumps({'tag_name': rel['tag_name'], 'assets': [
+                    {'name': up.ASSET_NAME, 'browser_download_url': 'x', 'size': len(data)}]}).encode())
+            return io.BytesIO(data)
+        u._get = get
+        self.assertEqual(u.check_and_download()['latest'], '98.0.0')
+        rel['tag_name'] = 'v99.0.0'
+        s = u.check_and_download()
+        self.assertEqual((s['status'], s['latest']), ('ready', '99.0.0'))

@@ -28,7 +28,7 @@ log = logging.getLogger('workbench')
 
 ASSET_NAME = 'D365Workbench-windows.zip'
 EXE_NAME = 'D365Workbench.exe'
-CHECK_EVERY = 6 * 3600
+CHECK_EVERY = 30 * 60  # 程序开着时每 30 分钟查一次；打开窗口时也会查
 
 
 def parse_version(text):
@@ -141,7 +141,7 @@ class Updater:
         return urllib.request.urlopen(req, timeout=timeout)
 
     def check_and_download(self):
-        if self.state['status'] in ('downloading', 'ready'):
+        if self.state['status'] in ('downloading', 'applying'):
             return self.snapshot()
         repo = self.get_settings().get('update_repo')
         if not repo:
@@ -150,6 +150,8 @@ class Updater:
         with self._get('https://api.github.com/repos/%s/releases/latest' % repo) as r:
             rel = json.loads(r.read().decode('utf-8'))
         latest = rel.get('tag_name') or ''
+        if self.state['status'] == 'ready' and self._ready_dir and parse_version(latest) == parse_version(self.state['latest']):
+            return self.snapshot()  # 这个版本已经下载好了
         self._set(latest=latest.lstrip('v'), notes=(rel.get('body') or '')[:2000])
         if not is_newer(latest):
             self._set(status='latest')

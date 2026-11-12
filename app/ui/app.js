@@ -71,13 +71,20 @@
   async function refreshUpdate(manual = false) {
     if (updateApplying) return;
     const bar = $('updateBar');
+    const btn = $('btnCheckUpdate');
     let u;
+    if (manual) { btn.disabled = true; btn.textContent = '检查中…'; }
     try {
       u = manual ? await call('update_check') : await call('update_status');
     } catch (e) {
       if (manual) toast(`检查更新失败：${errText(e)}`, true);
       return;
+    } finally {
+      if (manual) { btn.disabled = false; btn.textContent = '检查更新'; }
     }
+    const ready = u.status === 'ready' && u.canApply;
+    $('btnApplyUpdateTop').hidden = !ready;
+    if (ready) $('btnApplyUpdateTop').textContent = `立即更新到 v${u.latest}`;
     if (u.status === 'downloading') {
       bar.hidden = false;
       bar.innerHTML = `正在后台下载新版本 v${h(u.latest)}…（${u.progress}%）你可以继续正常使用。`;
@@ -428,6 +435,8 @@
     $('btnLogin').onclick = login;
     $('appVersion').title = '点这里检查更新';
     $('appVersion').onclick = () => refreshUpdate(true);
+    $('btnCheckUpdate').onclick = () => refreshUpdate(true);
+    $('btnApplyUpdateTop').onclick = applyUpdate;
     $('excelFile').onchange = onExcelChosen;
     for (const [id, action] of [['btnPause', 'pause'], ['btnResume', 'resume']]) {
       $(id).onclick = () => call('engine_control', action).then(() => setTimeout(refreshProgress, 800)).catch((e) => toast(errText(e), true));
@@ -470,7 +479,8 @@
     refreshStatus();
     setInterval(refreshStatus, 60000);
     setInterval(refreshProgress, 3000);
-    setTimeout(refreshUpdate, 8000);
+    // 打开窗口时查一次（程序可能已经在后台开了很久）
+    setTimeout(() => call('update_check').then(() => refreshUpdate()).catch(() => {}), 3000);
     setInterval(refreshUpdate, 60000);
     // 报平安：窗口关掉后程序据此退出
     setInterval(() => fetch('/__ping').catch(() => {}), 5000);
