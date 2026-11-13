@@ -26,6 +26,12 @@ DEFAULT_SETTINGS = {
     'show_worker': False,
     # 自动更新：从这个 GitHub 仓库的 Releases 取新版本（要是公开仓库）
     'update_repo': 'chickentende985-stack/d365-workbench',
+    # 照片总文件夹（PDI、防锈、交机、全流程用）：下面每台机一个“机台号_机型_吨位_工作时间”子文件夹
+    'photo_root': '',
+    # 订单上没有设备位置、这台机别的订单里也没有时，出发用这个位置（空着就停下来让你选）
+    'default_location': {'address': '', 'lat': '', 'lng': ''},
+    # 设备变更：Excel 里没填时用的默认值（和以前脚本面板里的一样）
+    'ec_defaults': {'ecEngineer': '', 'ecManager': '', 'ecHours': '1', 'ecRemark': '', 'ecUsage': 'Usable', 'ecAddress': 'uk', 'ecModel': 'sy'},
 }
 
 

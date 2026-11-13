@@ -318,7 +318,7 @@ function createLogic(transport) {
       }
     } else if (rec.handoverDate) warns.push('“交机日期”只在交机无照片里用，这行会忽略');
 
-    if (isTransfer && !rec.transferTo) errors.push('没填“转移给”');
+    if ((isTransfer || rec.funcKey === 'rust-dispatch|rust') && !rec.transferTo) errors.push('没填“转移给”（转给 / 派给谁）');
 
     if (isShip) {
       if (!rec.orderNo) errors.push('没填单号');
@@ -369,13 +369,30 @@ function createLogic(transport) {
       warns.push('Dealer/类型/质保只在设备变更里用，这行会忽略');
     }
 
-    if (rec.needsFolder && !errors.length) warns.push('要照片文件夹：开始前在 D365 窗口里选照片总文件夹');
+    if (rec.needsFolder && rec.machine) {
+      const fs = ctx.folders;
+      if (!fs) errors.push('还没在“设置”里选照片总文件夹');
+      else if (fs.error) errors.push(`读照片文件夹出错：${fs.error}`);
+      else {
+        const f = fs.machines?.[String(rec.machine).toUpperCase()];
+        if (!f) errors.push(`照片文件夹里没有“${rec.machine}_机型_吨位_工作时间”子文件夹`);
+        else {
+          const isRust = rec.funcKey === 'full|rust';
+          const needKeys = f.files.includes('5') ? (isRust ? ['1', '2', '3', '4', '5'] : ['1', '2', '3', '5']) : ['1', '2', '3', '4'];
+          const lack = needKeys.filter((k) => !f.files.includes(k));
+          if (lack.length) errors.push(`照片文件夹“${f.dir}”少了 ${lack.map((k) => `${k}.jpg`).join('、')}`);
+          if (!f.formatOk) warns.push(`文件夹名“${f.dir}”不是“机台号_机型_吨位_工作时间”，机型/吨位/工时可能读不到`);
+          if (!f.hours && !rec.hours) warns.push('文件夹名里没有工作时间');
+          info = [info, `文件夹：${[f.model, f.tonnage && `${f.tonnage}t`, f.hours && `${f.hours}h`].filter(Boolean).join(' / ')}`].filter(Boolean).join('｜');
+        }
+      }
+    }
     const level = errors.length ? 'error' : (warns.length ? 'warn' : 'ok');
     return { level, messages: [...errors, ...warns], info };
   }
 
-  async function checkAll(records, funcs, { userId = '', onProgress } = {}) {
-    const ctx = { seen: new Map(), userId: guid(userId) };
+  async function checkAll(records, funcs, { userId = '', folders = null, onProgress } = {}) {
+    const ctx = { seen: new Map(), userId: guid(userId), folders };
     const results = [];
     // 一行一行查（有缓存）；并发 4 行，避免一次打太多请求
     let next = 0;
@@ -436,7 +453,7 @@ function createLogic(transport) {
       } else {
         key = `${r.funcKey}|${r.transferTo}`;
         make = () => ({
-          func: r.funcKey, title: `${r.funcName}${r.transferTo ? `（转给 ${r.transferTo}）` : ''}`, needsFolder: true,
+          func: r.funcKey, title: `${r.funcName}${r.transferTo ? `（转给 ${r.transferTo}）` : ''}`, needsFolder: r.needsFolder,
           fields: r.transferTo ? { transferTarget: r.transferTo } : {}, lines: [],
         });
       }
@@ -447,7 +464,7 @@ function createLogic(transport) {
     });
     return [...jobs.values()].map((job) => {
       const text = job.lines.join('\n');
-      if (job.func === 'full|handover-pdi') job.fields.pasteMachines = text;
+      if (!['equipment-change|pdi', 'transfer|pdi-shipment'].includes(job.func)) job.fields.pasteMachines = text;
       if (job.func === 'equipment-change|pdi') job.fields.ecMachines = text;
       if (job.func === 'transfer|pdi-shipment') job.fields.shipOrders = text;
       return job;

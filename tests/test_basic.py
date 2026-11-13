@@ -101,6 +101,71 @@ class Tests(unittest.TestCase):
         r2.control('clear')
         self.assertIsNone(ops.OpsRunner(b).snapshot())
 
+    def _photo_root(self):
+        root = tempfile.mkdtemp()
+        d = os.path.join(root, 'SY215C123_SY215C_22_120.5h')
+        os.makedirs(d)
+        for n in ('1.JPG', '2.jpeg', '3.jpg', '4.png', 'note.txt'):
+            with open(os.path.join(d, n), 'wb') as f:
+                f.write(b'x')
+        os.makedirs(os.path.join(root, 'TH936ABC_STH_9'))  # 旧格式：没有工时
+        return root
+
+    def test_photos_scan(self):
+        from app import photos
+        root = self._photo_root()
+        found = photos.scan(root)
+        f = found['SY215C123']
+        self.assertEqual((f['model'], f['tonnage'], f['hours'], f['formatOk']), ('SY215C', '22', '120.5', True))
+        self.assertEqual(sorted(f['files']), ['1', '2', '3', '4'])
+        self.assertEqual(found['TH936ABC']['hours'], '')
+        self.assertEqual(photos.read_photos(f)['1']['b64'], 'eA==')
+        with self.assertRaises(FileNotFoundError):
+            photos.scan(os.path.join(root, 'nope'))
+
+    def test_parse_chain_and_folder(self):
+        from app import ops
+        root = self._photo_root()
+        kind, items = ops.parse_items({'func': 'full|chain', 'fields': {'pasteMachines': 'SY215C123\nMISSING1'}}, root)
+        self.assertEqual(kind, 'chain')
+        self.assertEqual([x.get('kind') for x in items], ['pdi', 'rust', 'pdi-dealer'] * 2)
+        self.assertEqual(items[0]['folder']['model'], 'SY215C')
+        self.assertEqual(items[3]['stage'], 'failed')
+        kind, items = ops.parse_items({'func': 'equipment-change|pdi', 'fields': {'ecMachines': 'A1 12h\nB2, 3'}})
+        self.assertEqual((kind, items[0]['workingHours'], items[1]['workingHours']), ('equipment-change', '12', '3'))
+
+    def test_photos_sent_only_for_photo_step(self):
+        from app import ops
+        root = self._photo_root()
+
+        class B:
+            seen = []
+
+            def ops_step(self, source, version, kind, item, opts):
+                B.seen.append((item.get('next'), sorted((opts.get('photos') or {}).keys())))
+                item = dict(item)
+                n = int(item.get('step') or 0) + 1
+                item['step'] = n
+                item['next'] = ['resolve', 'photos', 'fields', ''][n]
+                item['stage'] = 'done' if n >= 3 else 'x'
+                return {'item': item, 'logs': [], 'done': n >= 3}
+
+            def has_worker(self):
+                return False
+
+        r = ops.OpsRunner(B(), lambda: {'photo_root': root})
+        r.start({'func': 'full|pdi', 'fields': {'pasteMachines': 'SY215C123'}})
+        self._wait_ops(r)
+        self.assertEqual(B.seen, [(None, []), ('photos', ['1', '2', '3', '4']), ('fields', [])])
+        r.control('clear')
+
+    def test_settings_api(self):
+        r = self.post('settings_set', {'photo_root': ' "C:\\x" ', 'ec_defaults': {'ecRemark': 'r'}, 'evil': 1})
+        self.assertTrue(r['ok'])
+        self.assertEqual(r['value']['photo_root'], 'C:\\x')
+        self.assertEqual(r['value']['ec_defaults']['ecRemark'], 'r')
+        self.assertNotIn('evil', r['value'])
+
     def test_remarks(self):
         r = self.post('remark_set', 't1|SY1', {'status': 'notdone', 'remark': '缺照片', 'machineNo': 'SY1', 'title': '交机'})
         self.assertTrue(r['ok'])

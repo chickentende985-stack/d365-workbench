@@ -103,3 +103,9 @@ textarea.remark:focus { outline: 2px solid var(--primary); outline-offset: -1px;
 .nowrap { white-space: nowrap; }
 .small { font-size: 11px; }
 #recordsFilter { display: inline-flex; gap: 4px; }
+
+/* 设置 */
+.input { font: inherit; padding: 6px 8px; border: 1px solid var(--line, #d0d7de); border-radius: 4px; min-width: 0; }
+.formgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px 14px; }
+.formgrid label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+.formgrid .input { color: inherit; font-size: 14px; }

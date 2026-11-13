@@ -95,7 +95,7 @@ class App:
         self.engine = Engine(self.settings['engine_url'])
         self.browser = Browser(lambda: self.settings, self.engine)
         self.updater = Updater(lambda: self.settings)
-        self.ops = OpsRunner(self.browser)
+        self.ops = OpsRunner(self.browser, lambda: self.settings)
         self.exit_requested = False
         self.api = Api(self)
 

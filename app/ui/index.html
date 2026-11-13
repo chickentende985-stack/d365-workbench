@@ -23,6 +23,7 @@
   <button class="tab" data-view="excel">Excel 导入</button>
   <button class="tab" data-view="progress">执行进度</button>
   <button class="tab" data-view="records">完成记录</button>
+  <button class="tab" data-view="settings">设置</button>
 </nav>
 
 <main>
@@ -95,6 +96,41 @@
       <button class="btn btn-primary" id="btnExportRecords">一键导出 Excel</button>
     </div>
     <div id="recordsBody" class="empty">读取中…</div>
+  </section>
+
+  <!-- 设置 -->
+  <section class="view" id="view-settings" hidden>
+    <div class="card">
+      <h3>照片总文件夹 <small class="muted">PDI、经销商 PDI、防锈、交机、全流程用</small></h3>
+      <p class="muted small">下面每台机一个子文件夹，命名“机台号_机型_吨位_工作时间”（例如 SY215C12345_SY215C_22_120），里面放 1.jpg～5.jpg：1 铭牌、2 整机远照、3 工时照、4 其他照片（防锈有 5 号时 3、4 都是工时照，5 是其他照片）。</p>
+      <div class="toolbar">
+        <input id="setPhotoRoot" class="input grow" placeholder="例如 C:\Users\你\Desktop\照片">
+        <button class="btn" id="btnPickFolder">选择文件夹…</button>
+        <button class="btn" id="btnScanFolder">扫描看看</button>
+      </div>
+      <div id="scanResult" class="muted small"></div>
+    </div>
+    <div class="card">
+      <h3>默认设备位置 <small class="muted">出发时订单和这台机别的订单都没有设备位置才用；空着就停下来让你在订单上选</small></h3>
+      <div class="formgrid">
+        <label>地址<input id="setLocAddress" class="input" placeholder="例如 Eurolink East, Styles Cl, Sittingbourne ME10 3BF, UK"></label>
+        <label>纬度<input id="setLocLat" class="input" placeholder="51.346927"></label>
+        <label>经度<input id="setLocLng" class="input" placeholder="0.763358"></label>
+      </div>
+    </div>
+    <div class="card">
+      <h3>设备变更默认值 <small class="muted">Excel 里没填时用（和以前脚本面板里的一样）</small></h3>
+      <div class="formgrid">
+        <label>Responsible Service Engineer<input id="ecEngineer" class="input"></label>
+        <label>Service Manager<input id="ecManager" class="input"></label>
+        <label>Current working time<input id="ecHours" class="input"></label>
+        <label>Change Remarks<input id="ecRemark" class="input"></label>
+        <label>Equipment Usage Status（空着时）<input id="ecUsage" class="input"></label>
+        <label>Equipment Address（空着时）<input id="ecAddress" class="input"></label>
+        <label>Model (Machine Type)（空着时）<input id="ecModel" class="input"></label>
+      </div>
+    </div>
+    <div class="toolbar"><span class="grow"></span><button class="btn btn-primary" id="btnSaveSettings">保存设置</button></div>
   </section>
 </main>
 

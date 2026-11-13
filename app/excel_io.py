@@ -14,7 +14,7 @@ COLUMNS = [
      '必填（Shipment 转移可以只填单号）。机号后面不要带别的字'),
     ('func', '要做的事', ['功能', '操作', 'task', 'action', 'function'], 16, '必填，从下拉里选'),
     ('hours', '工时', ['工作小时', '工作时间', 'hours', 'working hours', 'operating hours'], 8,
-     '交机无照片、设备变更用；不填：交机用 PDI 里的工时，设备变更用默认工时'),
+     '交机、设备变更用；不填：交机用照片文件夹名/PDI 里的工时，设备变更用默认工时'),
     ('handoverDate', '交机日期', ['handover date', '日期'], 12, '交机无照片用；不填就是当天'),
     ('orderNo', '单号', ['订单号', 'order', 'order no', 'order number'], 14, 'Shipment 转移用：要派的单号'),
     ('description', 'Description', ['描述', '说明'], 30, 'Shipment 转移用：写进订单 Description，不填不改'),
@@ -38,10 +38,10 @@ FUNCS = [
     ('防锈', 'full|rust', True, '防锈运转'),
     ('交机', 'full|handover', True, '用文件夹里的照片交机'),
     ('交机无照片', 'full|handover-pdi', False, '照片和工时从这台机的 PDI 里拿'),
-    ('PDI转移', 'transfer|pdi', True, 'PDI 创建 → 服务转移（要填“转移给”）'),
-    ('经销商PDI派单', 'transfer|pdi-dealer', True, '经销商 PDI 创建 → Assign 派单（要填“转移给”）'),
+    ('PDI转移', 'transfer|pdi', False, 'PDI 创建 → 服务转移（要填“转移给”）'),
+    ('经销商PDI派单', 'transfer|pdi-dealer', False, '经销商 PDI 创建 → Assign 派单（要填“转移给”）'),
     ('Shipment转移', 'transfer|pdi-shipment', False, '按单号写 Description 并服务转移（要填“单号”“转移给”）'),
-    ('防锈派单', 'rust-dispatch|rust', True, '防锈：检查 → 派单'),
+    ('防锈派单', 'rust-dispatch|rust', False, '防锈：检查 → 派单'),
     ('设备变更', 'equipment-change|pdi', False, '新建并提交设备变更单'),
 ]
 

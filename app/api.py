@@ -3,11 +3,12 @@
 import base64
 import json
 import logging
+import os
 import threading
 import webbrowser
 from urllib.parse import urlparse
 
-from . import APP_NAME, APP_VERSION, excel_io, paths, remarks
+from . import APP_NAME, APP_VERSION, excel_io, paths, photos, remarks
 from .browser import NeedLogin
 from .ops import NATIVE_FUNCS
 
@@ -122,6 +123,50 @@ class Api:
         paths.save_settings(self._app.settings)
         self._app.browser.relaunch()
         return bool(show)
+
+    # ---- 设置 ----
+    EDITABLE = ('photo_root', 'default_location', 'ec_defaults')
+
+    def settings_get(self):
+        st = self._app.settings
+        return {k: st.get(k) for k in self.EDITABLE}
+
+    def settings_set(self, values):
+        values = dict(values or {})
+        st = self._app.settings
+        for k in self.EDITABLE:
+            if k not in values:
+                continue
+            v = values[k]
+            if k == 'photo_root':
+                v = str(v or '').strip().strip('"')
+            elif isinstance(v, dict):
+                v = {str(a): str(b if b is not None else '').strip() for a, b in v.items()}
+            st[k] = v
+        paths.save_settings(st)
+        return self.settings_get()
+
+    def photo_scan(self, root=None):
+        """扫描照片总文件夹：每台机的机型、吨位、工时和有哪几张照片。"""
+        root = self._app.settings.get('photo_root', '') if root is None else root
+        found = photos.scan(root)
+        return {'root': root, 'count': len(found), 'machines': {
+            k: {'dir': v['dir'], 'model': v['model'], 'tonnage': v['tonnage'], 'hours': v['hours'],
+                'formatOk': v['formatOk'], 'files': sorted(v['files'])} for k, v in found.items()}}
+
+    def pick_folder(self, initial=''):
+        """弹出 Windows 的“选择文件夹”窗口。"""
+        import tkinter
+        from tkinter import filedialog
+        root = tkinter.Tk()
+        root.withdraw()
+        root.attributes('-topmost', True)
+        try:
+            path = filedialog.askdirectory(parent=root, initialdir=initial or self._app.settings.get('photo_root') or None,
+                                           title='选择照片总文件夹')
+        finally:
+            root.destroy()
+        return os.path.normpath(path) if path else ''
 
     # ---- 完成情况 / 备注（你自己记的）----
     def remarks_get(self):

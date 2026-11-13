@@ -12,18 +12,30 @@ import re
 import threading
 import time
 
-from .. import paths
+from .. import paths, photos
 
 log = logging.getLogger('workbench')
 
 OPS_JS = os.path.join(paths.APP_DIR, 'ops', 'ops.js')
 STATE_FILE = 'ops-state.json'
 
-# Excel 里的功能 → 内置流程
+# Excel 里的功能 → 内置流程（ops.js 里的 kind）
 NATIVE_FUNCS = {
+    'full|chain': 'chain',
+    'full|pdi': 'pdi',
+    'full|pdi-dealer': 'pdi-dealer',
+    'full|rust': 'rust',
+    'full|handover': 'handover',
     'full|handover-pdi': 'handover-pdi',
+    'transfer|pdi': 'pdi-transfer',
+    'transfer|pdi-dealer': 'dealer-pdi-assign',
     'transfer|pdi-shipment': 'shipment-transfer',
+    'rust-dispatch|rust': 'rust-dispatch',
+    'equipment-change|pdi': 'equipment-change',
 }
+# 要用照片文件夹的流程
+FOLDER_KINDS = {'chain', 'pdi', 'pdi-dealer', 'rust', 'handover'}
+CHAIN_STEPS = (('pdi', '到港 PDI'), ('rust', '防锈'), ('pdi-dealer', '经销商 PDI'))
 FINISHED = ('done', 'skipped', 'failed')
 RETRY_DELAY = 5  # 出错后等几秒重试一次
 
@@ -38,8 +50,8 @@ def ops_version(source):
     return m.group(1) if m else '0'
 
 
-def parse_items(job):
-    """把任务里粘贴的机号 / 单号变成一台一项。"""
+def parse_items(job, photo_root=''):
+    """把任务里粘贴的机号 / 单号变成一台一项；要照片的流程顺便把这台机的照片文件夹找好。"""
     kind = NATIVE_FUNCS[job['func']]
     fields = job.get('fields') or {}
     items = []
@@ -49,13 +61,16 @@ def parse_items(job):
             if no:
                 items.append({'orderNumberInput': no, 'machineNo': '', 'stage': 'pending'})
     else:
-        for line in str(fields.get('pasteMachines') or '').splitlines():
-            parts = line.split()
+        text = fields.get('pasteMachines') or fields.get('ecMachines') or ''
+        for line in str(text).splitlines():
+            parts = re.split(r'[\s,，;；]+', line.strip())
+            parts = [p for p in parts if p]
             if not parts:
                 continue
             item = {'machineNo': parts[0], 'stage': 'pending'}
-            if len(parts) > 1:
-                item['workingHours'] = parts[1]
+            hours = next((p.rstrip('hH') for p in parts[1:] if re.match(r'^\d+(?:\.\d+)?[hH]?$', p)), None)
+            if hours is not None:
+                item['workingHours'] = hours
             items.append(item)
     seen = set()
     unique = []
@@ -65,12 +80,31 @@ def parse_items(job):
             continue
         seen.add(key.upper())
         unique.append(it)
+    if kind in FOLDER_KINDS:
+        folders = photos.scan(photo_root) if photo_root else {}
+        for it in unique:
+            f = folders.get(it['machineNo'].upper())
+            if not f:
+                it['stage'] = 'failed'
+                it['error'] = ('照片文件夹里没有“%s_机型_吨位_工作时间”这个子文件夹' % it['machineNo']) if photo_root \
+                    else '还没在“设置”里选照片总文件夹'
+                continue
+            it['folder'] = {k: f[k] for k in ('dir', 'path', 'model', 'tonnage', 'hours', 'files')}
+    if kind == 'chain':
+        expanded = []
+        for it in unique:
+            for sub, label in CHAIN_STEPS:
+                x = json.loads(json.dumps(it))
+                x.update(kind=sub, chain=True, chainLabel=label)
+                expanded.append(x)
+        unique = expanded
     return kind, unique
 
 
 class OpsRunner:
-    def __init__(self, browser):
+    def __init__(self, browser, get_settings=None):
         self.browser = browser
+        self.get_settings = get_settings or (lambda: {})
         self._lock = threading.RLock()
         self._thread = None
         self._pause = False
@@ -110,7 +144,7 @@ class OpsRunner:
         with self._lock:
             if self.running():
                 raise RuntimeError('后台已经有任务在跑，等它做完或先暂停')
-            kind, items = parse_items(job)
+            kind, items = parse_items(job, self.get_settings().get('photo_root', ''))
             if not items:
                 raise RuntimeError('任务里没有机号 / 单号')
             self.state = {
@@ -138,6 +172,8 @@ class OpsRunner:
                     self.state['status'] = 'running'
                     self.state['pauseReason'] = ''
                     retry = 0
+                    if self.state.get('kind') in FOLDER_KINDS:
+                        self._refresh_folders()
                     for it in self.state['items']:
                         if it.get('stage') == 'failed':  # 出错的那几台：从出错的那一步重做
                             it['stage'] = 'retry'
@@ -177,12 +213,29 @@ class OpsRunner:
                 'createdAt': s.get('createdAt', ''),
                 'currentIndex': s.get('currentIndex', 0), 'pauseReason': s.get('pauseReason', ''),
                 'items': [{
-                    'machineNo': x.get('machineNo') or x.get('orderNumberInput', ''), 'stage': x.get('stage', ''),
+                    'machineNo': (x.get('machineNo') or x.get('orderNumberInput', '')) + ('（%s）' % x['chainLabel'] if x.get('chainLabel') else ''),
+                    'stage': x.get('stage', ''),
                     'error': x.get('error') or '', 'orderNumber': x.get('orderNumber') or '',
                     'skipReason': x.get('skipReason') or '', 'orderId': x.get('orderId') or '',
                 } for x in s['items']],
                 'log': '\n'.join(s.get('log', [])),
             }
+
+    def _refresh_folders(self):
+        """继续时：之前因为找不到照片文件夹出错的，按现在的设置再找一次。"""
+        root = self.get_settings().get('photo_root', '')
+        try:
+            folders = photos.scan(root) if root else {}
+        except OSError:
+            return
+        for it in self.state['items']:
+            f = folders.get(str(it.get('machineNo', '')).upper())
+            if f:  # 文件夹里的照片可能补过：重新记一遍
+                it['folder'] = {k: f[k] for k in ('dir', 'path', 'model', 'tonnage', 'hours', 'files')}
+
+    def _ops_settings(self):
+        st = self.get_settings() or {}
+        return {'defaultLocation': st.get('default_location') or {}, 'ecDefaults': st.get('ec_defaults') or {}}
 
     # ---- 执行 ----
     def _current(self):
@@ -249,7 +302,13 @@ class OpsRunner:
                 s['currentIndex'] = idx
                 item = dict(s['items'][idx])
                 kind = s['kind']
-                opts = {'dryRun': bool(s.get('dryRun')), 'fields': s.get('fields') or {}}
+                opts = {'dryRun': bool(s.get('dryRun')), 'fields': s.get('fields') or {}, 'settings': self._ops_settings()}
+            if item.get('folder') and item.get('next') == 'photos':
+                try:
+                    opts['photos'] = photos.read_photos(item['folder'])  # 只在上传照片这一步才读文件
+                except OSError as e:
+                    opts['photos'] = {}
+                    log.warning('读照片失败：%s', e)
             try:
                 res = self.browser.ops_step(source, version, kind, item, opts)
             except Exception as e:  # noqa: BLE001 - 浏览器/登录问题：停下来，不算这台出错

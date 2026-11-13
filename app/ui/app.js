@@ -117,6 +117,50 @@
     for (const v of document.querySelectorAll('.view')) v.hidden = v.id !== `view-${view}`;
     if (view === 'progress') refreshProgress();
     if (view === 'records') refreshRecords();
+    if (view === 'settings') loadSettings();
+  }
+
+  // ---------- 设置 ----------
+  const EC_KEYS = ['ecEngineer', 'ecManager', 'ecHours', 'ecRemark', 'ecUsage', 'ecAddress', 'ecModel'];
+  async function loadSettings() {
+    try {
+      const st = await call('settings_get');
+      $('setPhotoRoot').value = st.photo_root || '';
+      const loc = st.default_location || {};
+      $('setLocAddress').value = loc.address || '';
+      $('setLocLat').value = loc.lat || '';
+      $('setLocLng').value = loc.lng || '';
+      for (const k of EC_KEYS) $(k).value = (st.ec_defaults || {})[k] || '';
+    } catch (e) { toast(errText(e), true); }
+  }
+  async function saveSettings() {
+    const lat = $('setLocLat').value.trim();
+    const lng = $('setLocLng').value.trim();
+    if ((lat || lng) && !(Number.isFinite(Number(lat)) && Number.isFinite(Number(lng)) && lat && lng)) {
+      toast('默认设备位置的纬度、经度要填数字（两个都填）', true);
+      return;
+    }
+    const ec = Object.fromEntries(EC_KEYS.map((k) => [k, $(k).value.trim()]));
+    try {
+      await call('settings_set', {
+        photo_root: $('setPhotoRoot').value.trim(),
+        default_location: { address: $('setLocAddress').value.trim(), lat, lng },
+        ec_defaults: ec,
+      });
+      toast('设置已保存');
+    } catch (e) { toast(errText(e), true); }
+  }
+  async function scanFolder() {
+    const root = $('setPhotoRoot').value.trim();
+    if (!root) { $('scanResult').textContent = '先填或选择照片总文件夹'; return; }
+    $('scanResult').textContent = '扫描中…';
+    try {
+      const r = await call('photo_scan', root);
+      const list = Object.values(r.machines);
+      const bad = list.filter((m) => !m.formatOk || !['1', '2', '3'].every((k) => m.files.includes(k)));
+      $('scanResult').innerHTML = `找到 ${r.count} 台机的文件夹${bad.length ? `，其中 ${bad.length} 个要看一下：` : '，都没问题。'}`
+        + bad.slice(0, 20).map((m) => `<div>· ${h(m.dir)}：${!m.formatOk ? '名字不是“机台号_机型_吨位_工作时间”' : ''} ${['1', '2', '3', '4'].filter((k) => !m.files.includes(k)).map((k) => `少 ${k}.jpg`).join(' ')}</div>`).join('');
+    } catch (e) { $('scanResult').textContent = errText(e); }
   }
 
   // ---------- 机器查询 ----------
@@ -261,8 +305,12 @@
     excel.results = excel.records.map(() => ({ level: 'pending', messages: [], info: '' }));
     renderExcel();
     try {
+      let folders = null;
+      if (excel.records.some((r) => schema.funcs.find((f) => f.name === r.func || f.func === r.func)?.needsFolder)) {
+        try { folders = await call('photo_scan'); } catch (e) { folders = { error: errText(e) }; }
+      }
       excel.results = await logic.checkAll(excel.records, schema.funcs, {
-        userId: me.userId,
+        userId: me.userId, folders,
         onProgress: (done, total) => { bar.firstElementChild.style.width = `${Math.round((done / total) * 100)}%`; },
       });
     } catch (e) {
@@ -321,11 +369,9 @@
         <div class="title">${h(job.title)}</div>
         <div class="muted">${job.lines.length} ${job.func === 'transfer|pdi-shipment' ? '张单' : '台机'}（Excel 第 ${h(job.rows.join('、'))} 行）</div>
         <pre>${h(job.lines.join('\n'))}</pre>
-        ${job.needsFolder
-          ? '<div class="hint">这个功能要读照片文件夹，后台执行下一版支持；现在请继续用浏览器里的油猴脚本做这几台。</div>'
-          : `<div><button class="btn ${excel.sent.has(i) ? '' : 'btn-primary'}" data-job="${i}">${excel.sent.has(i) ? '已开始（再执行一次）' : '开始执行'}</button>
-             ${NATIVE.has(job.func) ? `<button class="btn" data-job="${i}" data-dry="1" title="只读数据，把每一步要写什么列在日志里，不改 D365">先演练一遍（不改 D365）</button>
-             <span class="muted">工作台内置操作，直接调 D365 接口</span>` : ''}</div>`}
+        <div><button class="btn ${excel.sent.has(i) ? '' : 'btn-primary'}" data-job="${i}">${excel.sent.has(i) ? '已开始（再执行一次）' : '开始执行'}</button>
+          <button class="btn" data-job="${i}" data-dry="1" title="只读数据，把每一步要写什么列在日志里，不改 D365">先演练一遍（不改 D365）</button>
+          ${job.needsFolder ? '<span class="muted">照片从“设置”里的照片总文件夹读</span>' : ''}</div>
       </div>`).join('');
   }
 
@@ -385,7 +431,7 @@
     'dealer-assign-submitting': 'Assign 派单', transitioning: '切换状态',
     accepting: '接单', 'setting-off': '出发', arriving: '到达', ticket: '上传 Service Ticket', submitting: '提交审核', retry: '重做',
   };
-  const NATIVE = new Set(['full|handover-pdi', 'transfer|pdi-shipment']);
+
   const RUN = { running: ['pill-ok', '运行中'], paused: ['pill-warn', '已暂停'], completed: ['pill-muted', '已完成'], draft: ['pill-muted', '已准备，等你点开始'] };
 
   // 后台画面：截一张执行页面的图（不用打开窗口、不会打断执行）
@@ -609,6 +655,14 @@
       $(id).addEventListener('focusout', onRemarkBlur);
     }
     $('btnExportProgress').onclick = exportProgress;
+    $('btnSaveSettings').onclick = saveSettings;
+    $('btnScanFolder').onclick = scanFolder;
+    $('btnPickFolder').onclick = async () => {
+      try {
+        const p = await call('pick_folder', $('setPhotoRoot').value.trim());
+        if (p) { $('setPhotoRoot').value = p; scanFolder(); }
+      } catch (e) { toast(errText(e), true); }
+    };
     $('btnExportRecords').onclick = exportRecords;
     $('recordsFilter').addEventListener('click', (ev) => {
       const b = ev.target.closest('[data-filter]');
