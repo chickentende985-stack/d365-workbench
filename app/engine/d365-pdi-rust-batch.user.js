@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         D365 PDI/防锈批量建单与附件上传
 // @namespace    local.sany.d365.batch
-// @version      0.10.4
+// @version      0.10.5
 // @description  按机号打开已有 PDI/防锈订单，自动上传附件、现场完工并提交审核；服务转移模式可创建 PDI；防锈派单模式可把卡在 Created 的防锈单派给指定人员；交机模式可新建或继续完成交机单；设备变更模式可粘贴机号批量新建并提交设备变更单。
 // @author       Local
 // @updateURL    https://gist.githubusercontent.com/chickentende985-stack/34a655254f34696ae299d67386621d95/raw/d365-pdi-rust-batch.user.js
@@ -22,7 +22,7 @@
   const APP_ID = 'd365-pdi-rust-batch';
   // 面板显示的版本号：优先读取脚本管理器提供的 GM_info，取不到时使用此常量。
   // 升级 @version 时同步修改此常量，publish.sh 会检查两者一致。
-  const SCRIPT_VERSION_FALLBACK = '0.10.4';
+  const SCRIPT_VERSION_FALLBACK = '0.10.5';
   const SCRIPT_VERSION = (() => {
     try {
       return typeof GM_info !== 'undefined' && GM_info?.script?.version
@@ -195,6 +195,9 @@
   // 用户点击“暂停”后置为 true：waitFor 每轮都会检查并立即中止当前步骤；
   // 正在执行的流程手里的 run 对象仍是 running，saveState 不会再把状态写回 running。
   let pauseRequested = false;
+  // 点“暂停”后、当前步骤还没真正停下时又点了“跳过当前单”：先记下来，等正在跑的流程停下后再跳过。
+  // （否则正在跑的流程手里还拿着旧的进度，会把“跳过”覆盖掉，接着做同一单。）
+  let pendingSkip = null;
 
   class RunPausedError extends Error {
     constructor() {
@@ -5972,16 +5975,15 @@
         return;
       }
       if (!confirm(`跳过机号“${item.machineNo}”？已创建的 D365 订单会保留，不会删除。`)) return;
-      item.stage = 'skipped';
-      item.error = '';
-      item.skippedAt = new Date().toISOString();
-      run.currentIndex += 1;
-      pauseRequested = false;
-      run.status = run.currentIndex >= run.items.length ? 'completed' : 'running';
-      saveState(run);
-      this.log(`${item.machineNo}：已跳过，D365 中已有订单保持不变`);
-      this.refresh();
-      if (run.status === 'running') resumeRun(this);
+      if (resuming) {
+        // 当前这一步还在跑：保持“暂停”让它尽快停下，停下后由 resumeRun 收尾时再跳过
+        pendingSkip = { index: run.currentIndex, machineNo: item.machineNo };
+        pauseRequested = true;
+        this.$('skip').disabled = true;
+        this.log(`${item.machineNo}：正在等当前操作停下，停下后自动跳过这一单并继续下一单…`);
+        return;
+      }
+      applySkip(run, this);
     }
 
     refresh() {
@@ -6081,6 +6083,22 @@
   }
 
   let resuming = false;
+
+  // 跳过当前单并继续下一单（只在没有流程在跑时调用）
+  function applySkip(run, panel) {
+    const item = run.items?.[run.currentIndex];
+    if (!item) return;
+    item.stage = 'skipped';
+    item.error = '';
+    item.skippedAt = new Date().toISOString();
+    run.currentIndex += 1;
+    pauseRequested = false;
+    run.status = run.currentIndex >= run.items.length ? 'completed' : 'running';
+    saveState(run);
+    panel.log(`${item.machineNo}：已跳过，D365 中已有订单保持不变`);
+    panel.refresh();
+    if (run.status === 'running') setTimeout(() => resumeRun(panel), 0);
+  }
   // ===== 界面语言 =====
   // 脚本是按英文界面写的（按键、弹窗、附件表格的文字）。账号语言被改成中文等其他语言后，
   // 很多地方会认不出来而卡住。所以开始/继续任务时，先通过 D365 接口读取当前账号的界面语言
@@ -6496,6 +6514,19 @@
       }
     } finally {
       resuming = false;
+      // 流程停下后再处理“跳过”：这时读到的才是最新进度，不会被旧流程覆盖
+      if (pendingSkip) {
+        const wanted = pendingSkip;
+        pendingSkip = null;
+        const latest = getState();
+        const current = latest?.items?.[latest.currentIndex];
+        if (latest && current && latest.currentIndex === wanted.index && !['done', 'skipped'].includes(current.stage)) {
+          applySkip(latest, panel);
+        } else {
+          pauseRequested = false;
+          panel.refresh();
+        }
+      }
     }
   }
 
