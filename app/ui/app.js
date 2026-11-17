@@ -31,6 +31,8 @@
     if (!j.ok) {
       const err = new Error(j.error || '出错了');
       err.needLogin = !!j.needLogin;
+      err.needEviLogin = !!j.needEviLogin;
+      if (j.needEviLogin) markEviLoggedOut(j.error);
       if (j.needLogin) markLoggedOut(j.error);
       throw err;
     }
@@ -63,6 +65,77 @@
       pill.textContent = 'D365：连不上';
       pill.title = errText(e);
       pill.className = 'pill pill-err';
+    }
+  }
+
+  // ---------- EVI ----------
+  function markEviLoggedOut(message) {
+    const pill = $('eviPill');
+    pill.textContent = 'EVI 未登录';
+    pill.title = message || '登录后能在“机器查询”里看到机器的实时位置';
+    pill.className = 'pill pill-warn';
+    $('btnEviLogin').hidden = false;
+  }
+  async function refreshEviStatus() {
+    try {
+      const s = await call('evi_status');
+      if (!s.loggedIn) { markEviLoggedOut(); return; }
+      const pill = $('eviPill');
+      pill.textContent = `EVI 已登录${s.user ? `：${s.user}` : ''}`;
+      pill.title = `登录时间 ${s.savedAt}`;
+      pill.className = 'pill pill-ok';
+      $('btnEviLogin').hidden = true;
+    } catch (e) { /* 忽略 */ }
+  }
+  async function eviLogin() {
+    const btn = $('btnEviLogin');
+    btn.disabled = true;
+    btn.textContent = '请在弹出的窗口里登录 EVI…';
+    try {
+      await call('evi_login');
+      toast('EVI 登录成功');
+      await refreshEviStatus();
+      const cur = $('machineInput').value.trim();
+      if (cur && currentView === 'machine') showEvi(cur);
+    } catch (e) {
+      toast(`EVI 登录没有完成：${errText(e)}`, true);
+    }
+    btn.disabled = false;
+    btn.textContent = '登录 EVI';
+  }
+  // 机器查询：EVI 里的实时位置（和 D365 资料同时查，互不影响）
+  let eviSeq = 0;
+  async function showEvi(serial) {
+    const box = $('eviResult');
+    const seq = ++eviSeq;
+    box.innerHTML = '<div class="card"><h3>EVI 实时位置</h3><div class="muted">查询中…</div></div>';
+    try {
+      const r = await call('evi_locate', serial);
+      if (seq !== eviSeq) return;
+      if (!r.found) {
+        box.innerHTML = `<div class="card"><h3>EVI 实时位置</h3><div class="muted">EVI 里找不到 ${h(serial)}${r.similar?.length ? `；相近的：${r.similar.map((x) => `<span class="link" data-serial="${h(x)}">${h(x)}</span>`).join('、')}` : '（可能没装 GPS 终端，或者不在你的 EVI 账号下）'}</div></div>`;
+        return;
+      }
+      const old = r.positionAgeDays != null && r.positionAgeDays > 7;
+      const kv = [
+        ['在线', r.online ? '在线' : '离线'], ['位置时间', r.positionTime + (r.positionAgeDays != null ? `（${r.positionAgeDays < 1 ? '今天' : `${Math.floor(r.positionAgeDays)} 天前`}）` : '')],
+        ['最后上报', r.reportTime], ['地区', r.region], ['经纬度', r.lat != null ? `${r.lat}, ${r.lng}` : '没有位置'],
+        ['总工时（EVI）', r.totalHours != null ? `${Math.round(r.totalHours * 10) / 10} h` : ''], ['机型（EVI）', r.model],
+      ];
+      box.innerHTML = `<div class="card">
+        <h3>EVI 实时位置 <span class="badge ${r.online ? 'b-ok' : 'b-muted'}">${r.online ? '在线' : '离线'}</span>
+          ${old ? '<span class="badge b-warn">位置超过 7 天没更新</span>' : ''}
+          ${r.mapUrl ? `<a class="link" href="${h(r.mapUrl)}" target="_blank" rel="noopener" style="font-size:12px;font-weight:normal">在 Google 地图打开</a>` : ''}</h3>
+        ${r.address ? `<div style="margin-bottom:8px"><b>${h(r.address)}</b></div>` : ''}
+        <div class="kv">${kv.map(([k, v]) => `<div><span>${h(k)}</span><b>${h(v === '' || v == null ? '—' : v)}</b></div>`).join('')}</div>
+        ${r.lat != null ? `<iframe title="地图" style="width:100%;height:320px;border:1px solid var(--line);border-radius:6px;margin-top:10px"
+           src="https://www.openstreetmap.org/export/embed.html?bbox=${r.lng - 0.02},${r.lat - 0.012},${r.lng + 0.02},${r.lat + 0.012}&layer=mapnik&marker=${r.lat},${r.lng}"></iframe>` : ''}
+      </div>`;
+    } catch (e) {
+      if (seq !== eviSeq) return;
+      box.innerHTML = e.needEviLogin
+        ? `<div class="card"><h3>EVI 实时位置</h3><div class="muted">${h(errText(e))} <button class="btn" data-evi-login="1">登录 EVI</button></div></div>`
+        : `<div class="card"><h3>EVI 实时位置</h3><div class="muted">查 EVI 出错：${h(errText(e))}</div></div>`;
     }
   }
 
@@ -352,6 +425,7 @@
     const box = $('machineResult');
     box.className = 'empty';
     box.textContent = `正在查询 ${serial}…`;
+    showEvi(serial);
     try {
       const r = await logic.machineReport(serial);
       if (!r.found) {
@@ -801,6 +875,8 @@
   function bind() {
     $('tabs').addEventListener('click', (ev) => { const b = ev.target.closest('.tab'); if (b) showView(b.dataset.view); });
     $('btnLogin').onclick = login;
+    $('btnEviLogin').onclick = eviLogin;
+    $('eviResult').addEventListener('click', (ev) => { if (ev.target.closest('[data-evi-login]')) eviLogin(); });
     $('appVersion').title = '点这里检查更新';
     $('appVersion').onclick = () => refreshUpdate(true);
     $('btnCheckUpdate').onclick = () => refreshUpdate(true);
@@ -895,6 +971,7 @@
       schema = await call('schema');
     } catch (e) { toast(errText(e), true); }
     refreshStatus();
+    refreshEviStatus();
     setInterval(refreshStatus, 60000);
     setInterval(refreshProgress, 3000);
     // 打开窗口时查一次（程序可能已经在后台开了很久）

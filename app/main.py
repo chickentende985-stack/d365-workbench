@@ -22,6 +22,7 @@ from . import APP_VERSION, paths
 from .api import Api
 from .browser import Browser
 from .engine import Engine
+from .evi import Evi
 from .ops import OpsRunner
 from .server import make_server
 from .updater import Updater
@@ -96,6 +97,7 @@ class App:
         self.browser = Browser(lambda: self.settings, self.engine)
         self.updater = Updater(lambda: self.settings)
         self.ops = OpsRunner(self.browser, lambda: self.settings)
+        self.evi = Evi(self.browser)
         self.exit_requested = False
         self.api = Api(self)
 

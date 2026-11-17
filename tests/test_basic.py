@@ -57,6 +57,8 @@ class FakeApp:
         self.browser = FakeBrowser()
         from app.ops import OpsRunner
         self.ops = OpsRunner(self.browser)
+        from app.evi import Evi
+        self.evi = Evi(self.browser)
 
 
 class Tests(unittest.TestCase):
@@ -165,6 +167,36 @@ class Tests(unittest.TestCase):
         self.assertEqual(r['value']['photo_root'], 'C:\\x')
         self.assertEqual(r['value']['ec_defaults']['ecRemark'], 'r')
         self.assertNotIn('evil', r['value'])
+
+    def test_evi_locate(self):
+        from app import evi
+        e = evi.Evi(None)
+        e.state = {'token': 't'}
+        calls = []
+
+        def fake(path, method='GET', params=None, body=None, timeout=30):
+            calls.append(path)
+            if path.endswith('getMachineInfoByKeyword'):
+                return [{'serialNo': 'SYK1', 'loginId': 'L1'}, {'serialNo': 'SYK10', 'loginId': 'L2'}]
+            if path.endswith('getRealTimeData'):
+                assert params == {'loginId': 'L1'}
+                return {'latitude': '50.98828', 'longitude': '0.101393', 'isOnLine': True, 'receiveTimeValidLal': '1794931348000',
+                        'receiveTime': '1794933259000', 'totalWorkTime': '254.27', 'machineTypeName': 'SY135CAI5'}
+            if path.endswith('queryDeviceList'):
+                return [{'serialNo': 'SYK1', 'deviceTags': '{nation:GB,"nationName:United Kingdom",region1:X,"region1Name:East Sussex",region3Name:Hailsham}'}]
+            raise AssertionError(path)
+        e._request = fake
+        e._address = lambda lat, lng: '1 Test Rd'
+        r = e.locate('syk1')
+        self.assertTrue(r['found'])
+        self.assertEqual((r['lat'], r['lng'], r['online']), (50.98828, 0.101393, True))
+        self.assertEqual(r['region'], 'Hailsham, East Sussex, United Kingdom')
+        self.assertIn('50.98828,0.101393', r['mapUrl'])
+        self.assertFalse(e.locate('NOPE')['found'])
+        e2 = evi.Evi(None)
+        e2.state = {}
+        with self.assertRaises(evi.EviNeedLogin):
+            e2.locate('X')
 
     def test_remarks(self):
         r = self.post('remark_set', 't1|SY1', {'status': 'notdone', 'remark': '缺照片', 'machineNo': 'SY1', 'title': '交机'})

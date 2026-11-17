@@ -14,6 +14,8 @@
     <button id="btnApplyUpdateTop" class="btn btn-small btn-update" hidden>立即更新</button>
     <span id="d365Pill" class="pill pill-muted">D365：检查中…</span>
     <button id="btnLogin" class="btn" hidden>登录 D365</button>
+    <span id="eviPill" class="pill pill-muted" title="EVI（Fleet Management System）：查机器实时位置">EVI：检查中…</span>
+    <button id="btnEviLogin" class="btn" hidden>登录 EVI</button>
   </div>
 </header>
 
@@ -35,6 +37,7 @@
       <button class="btn btn-primary" type="submit">查询</button>
     </form>
     <div class="chips" id="machineHistory"></div>
+    <div id="eviResult"></div>
     <div id="machineResult" class="empty">输入机号查看这台机的设备档案、所有订单、照片和 Service Ticket 齐不齐。</div>
   </section>
 

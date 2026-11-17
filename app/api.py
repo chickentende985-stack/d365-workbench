@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 
 from . import APP_NAME, APP_VERSION, excel_io, paths, photos, remarks
 from .browser import NeedLogin
+from .evi import EviNeedLogin
 from .ops import NATIVE_FUNCS
 
 log = logging.getLogger('workbench')
@@ -124,6 +125,27 @@ class Api:
         self._app.browser.relaunch()
         return bool(show)
 
+    # ---- EVI（机器实时位置）----
+    def evi_status(self):
+        return self._app.evi.status()
+
+    def evi_login(self):
+        if self._app.ops.running():
+            raise RuntimeError('后台还有任务在跑，等跑完再登录 EVI（登录要用到同一个浏览器）')
+        if not self._login_lock.acquire(blocking=False):
+            raise RuntimeError('登录窗口已经开着了')
+        try:
+            return self._app.evi.login()
+        finally:
+            self._login_lock.release()
+
+    def evi_logout(self):
+        self._app.evi.logout()
+        return True
+
+    def evi_locate(self, serial):
+        return self._app.evi.locate(serial)
+
     # ---- 设置 ----
     EDITABLE = ('photo_root', 'default_location', 'ec_defaults')
 
@@ -207,6 +229,8 @@ def call(api, method, args):
         return {'ok': True, 'value': fn(*(args or []))}
     except NeedLogin as e:
         return {'ok': False, 'error': str(e), 'needLogin': True}
+    except EviNeedLogin as e:
+        return {'ok': False, 'error': str(e), 'needEviLogin': True}
     except Exception as e:  # noqa: BLE001 - 原样告诉界面
         log.exception('调用 %s 出错', method)
         return {'ok': False, 'error': str(e) or e.__class__.__name__}

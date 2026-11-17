@@ -326,6 +326,40 @@ class Browser:
             raise NeedLogin('%s 分钟内没有完成登录' % (timeout // 60))
         return self._run(fn, timeout=timeout + 90)
 
+    def evi_login(self, base, timeout=300):
+        """弹出看得见的浏览器让你登录 EVI（输邮箱、密码、拖滑块）；登录成功后读出 EVI 的令牌，关窗回到后台。"""
+        def fn():
+            ctx = self._launch(headed=True)
+            page = ctx.new_page()
+            try:
+                page.goto(base + '/logon', wait_until='domcontentloaded', timeout=60000)
+            except Exception:  # noqa: BLE001
+                pass
+            page.bring_to_front()
+            host = urlparse(base).netloc
+            deadline = time.time() + timeout
+            while time.time() < deadline:
+                if page.is_closed():
+                    self._close()
+                    raise NeedLogin('EVI 登录窗口被关闭了')
+                try:
+                    if urlparse(page.url).netloc == host and '/logon' not in page.url:
+                        info = page.evaluate('''() => {
+                          const t = sessionStorage.getItem('user-token') || sessionStorage.getItem('token');
+                          let user = '';
+                          try { const u = JSON.parse(sessionStorage.getItem('userInfo') || '{}'); user = u.userName || u.name || u.email || ''; } catch (e) {}
+                          return t ? { token: t, user } : null;
+                        }''')
+                        if info and info.get('token'):
+                            self._close()
+                            return info
+                except Exception:  # noqa: BLE001 - 页面还在跳转
+                    pass
+                page.wait_for_timeout(1500)
+            self._close()
+            raise NeedLogin('%s 分钟内没有完成 EVI 登录' % (timeout // 60))
+        return self._run(fn, timeout=timeout + 90)
+
     def fetch(self, path, method='GET', body=None, headers=None):
         return self._run(lambda: self._fetch(path, method, body, headers), timeout=180)
 
