@@ -35,6 +35,7 @@ FUNCS = [
     ('全流程', 'full|chain', True, '到港 PDI → 防锈 → 经销商 PDI（经销商设备才做）'),
     ('PDI', 'full|pdi', True, '到港预验收 PDI'),
     ('经销商PDI', 'full|pdi-dealer', True, '代理商入库预验收'),
+    ('经销商PDI无照片', 'full|pdi-dealer-nophoto', False, '代理商入库预验收：照片、机型、吨位、工时从这台机的到港 PDI 里拿'),
     ('防锈', 'full|rust', True, '防锈运转'),
     ('交机', 'full|handover', True, '用文件夹里的照片交机'),
     ('交机无照片', 'full|handover-pdi', False, '照片和工时从这台机的 PDI 里拿'),

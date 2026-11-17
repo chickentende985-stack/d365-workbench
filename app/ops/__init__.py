@@ -24,6 +24,7 @@ NATIVE_FUNCS = {
     'full|chain': 'chain',
     'full|pdi': 'pdi',
     'full|pdi-dealer': 'pdi-dealer',
+    'full|pdi-dealer-nophoto': 'pdi-dealer-nophoto',
     'full|rust': 'rust',
     'full|handover': 'handover',
     'full|handover-pdi': 'handover-pdi',

@@ -12,7 +12,7 @@
  */
 (() => {
   'use strict';
-  const VERSION = '2.0.0';
+  const VERSION = '2.1.0';
   const ORDER = 'mcs_consultationorder';
   const ORDERS = 'mcs_consultationorders';
   const ZERO_GUID = '00000000-0000-0000-0000-000000000000';
@@ -651,28 +651,7 @@
       const st = await orderStatus(item, ctx);
       if (st !== ST.Arrived && st !== ST.Rejected) return;
       if (item.folder) return uploadFolderPhotos(item, ctx, 'handover'); // 交机（用文件夹里的照片）
-      const have = item.sim.newOrder ? new Set(item.sim.files || []) : await orderFileTypes(item, ctx);
-      const pdiFiles = await listFiles(item.pdiOrderId);
-      const newest = (type) => pdiFiles.filter((f) => fileType(f) === type && f.FileUrl)
-        .sort((a, b) => String(b.CreateTime || '').localeCompare(String(a.CreateTime || '')))[0] || null;
-      for (const spec of HANDOVER_PHOTOS) {
-        if (have.has(spec.type)) continue;
-        let src = newest(spec.type);
-        if (!src && spec.type === FILE.other.type) {
-          src = pickOtherPhoto(item, pdiFiles, newest);
-          // PDI 一共就三张照片（铭牌、远照、工时照）：只能把整机远照再用一次当“其他照片”
-          if (!src && newest(FILE.far.type)) {
-            src = newest(FILE.far.type);
-            ctx.log(`PDI 里除了铭牌/远照/工时照没有别的照片，“其他照片”用整机远照再传一次`);
-          } else if (src) {
-            ctx.log(`PDI 里没有“其他照片”，选用 PDI 的 ${src.Name}（和铭牌/远照/工时照不重复）`);
-          }
-        }
-        if (!src) throw new Error(`PDI ${item.pdiOrderNumber} 里没有“${spec.label}”照片，无法自动交机`);
-        const blob = await download(src.FileUrl, `PDI 的“${spec.label}”`);
-        ctx.log(`上传 ${spec.label}（来自 PDI 的 ${src.Name}）`);
-        await uploadFile(item, ctx, blob, spec, extOf(src.Name, 'jpg'));
-      }
+      await copyPhotosFromPdi(item, ctx, item.pdiOrderId, item.pdiOrderNumber, '交机');
     },
 
     // 8. Service Ticket：PDI 附件里有就下载，没有就从 PDI 的 Service Completion 生成
@@ -734,6 +713,32 @@
       ctx.log(`已提交审核（${STATUS_TEXT[after]}）`);
     },
   };
+
+  // 从另一张 PDI 的附件里拿四张照片（铭牌、远照、工时照、其他照片）上传到这张单；这张单上已有的类型不重复传
+  async function copyPhotosFromPdi(item, ctx, srcId, srcNo, purpose) {
+    const have = item.sim.newOrder ? new Set(item.sim.files || []) : await orderFileTypes(item, ctx);
+    const pdiFiles = await listFiles(srcId);
+    const newest = (type) => pdiFiles.filter((f) => fileType(f) === type && f.FileUrl)
+      .sort((a, b) => String(b.CreateTime || '').localeCompare(String(a.CreateTime || '')))[0] || null;
+    for (const spec of HANDOVER_PHOTOS) {
+      if (have.has(spec.type)) continue;
+      let src = newest(spec.type);
+      if (!src && spec.type === FILE.other.type) {
+        src = pickOtherPhoto(item, pdiFiles, newest);
+        // PDI 一共就三张照片（铭牌、远照、工时照）：只能把整机远照再用一次当“其他照片”
+        if (!src && newest(FILE.far.type)) {
+          src = newest(FILE.far.type);
+          ctx.log(`PDI ${srcNo} 里除了铭牌/远照/工时照没有别的照片，“其他照片”用整机远照再传一次`);
+        } else if (src) {
+          ctx.log(`PDI ${srcNo} 里没有“其他照片”，选用它的 ${src.Name}（和铭牌/远照/工时照不重复）`);
+        }
+      }
+      if (!src) throw new Error(`PDI ${srcNo} 里没有“${spec.label}”照片，无法自动${purpose}`);
+      const blob = await download(src.FileUrl, `PDI 的“${spec.label}”`);
+      ctx.log(`上传 ${spec.label}（来自 PDI ${srcNo} 的 ${src.Name}）`);
+      await uploadFile(item, ctx, blob, spec, extOf(src.Name, 'jpg'));
+    }
+  }
 
   function pickOtherPhoto(item, files, newest) {
     const isImage = (f) => /\.(jpe?g|png)$/i.test(String(f.Name || '')) && f.FileUrl;
@@ -1010,15 +1015,16 @@
     const o = item.sim.newOrder ? {} : await readOrder(item.orderId, sel);
     const payload = {};
     const changes = [];
-    const folder = item.folder || {};
+    const folder = item.folder || item.srcInfo || {};
+    const srcName = item.folder ? '照片文件夹名里' : `到港 PDI ${item.srcPdiNumber || ''} 里`;
     if (!has(o.mcs_equipmentusagestatus)) { payload.mcs_equipmentusagestatus = USAGE_USABLE; changes.push('Usable'); }
     if (!has(o.mcs_model)) {
-      if (!folder.model) throw new Error(`Model 是空的，但照片文件夹名里没有机型（要按“机台号_机型_吨位_工作时间”命名）`);
+      if (!folder.model) throw new Error(`Model 是空的，${srcName}也没有机型`);
       payload.mcs_model = folder.model; changes.push(`机型 ${folder.model}`);
     }
     if (!has(o.mcs_tonnage)) {
       const t = Number(String(folder.tonnage || '').replace(/[^\d.]/g, ''));
-      if (!(t > 0)) throw new Error(`Tonnage 是空的，但照片文件夹名里没有吨位（要按“机台号_机型_吨位_工作时间”命名）`);
+      if (!(t > 0)) throw new Error(`Tonnage 是空的，${srcName}也没有吨位`);
       payload.mcs_tonnage = Math.ceil(t); changes.push(`吨位 ${Math.ceil(t)}`);
     }
     if (o.mcs_acceptancepassed !== true) { payload.mcs_acceptancepassed = true; changes.push('Check Passed'); }
@@ -1032,7 +1038,7 @@
     if (!(cur > 0) || (floor !== null && !(cur > floor))) {
       let hours = Number(String(item.workingHours ?? folder.hours ?? '').replace(/[^\d.]/g, ''));
       if (!Number.isFinite(hours) || String(item.workingHours ?? folder.hours ?? '').trim() === '') {
-        throw new Error(`Current Operating Hours 是空的，但照片文件夹名里没有工作时间（要按“机台号_机型_吨位_工作时间”命名）`);
+        throw new Error(`Current Operating Hours 是空的，${srcName}也没有工作时间`);
       }
       if (!(hours > 0)) hours = 0.1;
       if (floor !== null && hours <= floor) {
@@ -1177,7 +1183,28 @@
   // =====================================================================
   // PDI（到港预验收）/ 经销商 PDI（代理商入库预验收）：用照片文件夹
   // =====================================================================
-  function pdiKindOf(item) { return item.kind === 'pdi-dealer' ? 'pdi-dealer' : 'pdi'; }
+  function pdiKindOf(item) { return ['pdi-dealer', 'pdi-dealer-nophoto'].includes(item.kind) ? 'pdi-dealer' : 'pdi'; }
+  const noPhoto = (item) => item.kind === 'pdi-dealer-nophoto';
+
+  // 没有照片的经销商 PDI：照片、机型、吨位、工时都从这台机的到港 PDI 拿
+  async function findSourcePdi(item, ctx) {
+    const filter = ` and (mcs_preacceptancetypes eq null or (mcs_preacceptancetypes ne ${PRE_DEALER} and mcs_preacceptancetypes ne ${PRE_SHIPMENT}))`;
+    const list = (await query(ORDERS, 'mcs_consultationorderid,mcs_name,mcs_status,statecode,mcs_model,mcs_tonnage,mcs_systemrunningtime,createdon',
+      `_mcs_equipment_value eq ${item.equipmentId} and mcs_ordertype eq ${TYPE.Arrival}${filter}`, '&$orderby=createdon desc&$top=20'))
+      .filter((o) => Number(o.statecode) === 0 && Number(o.mcs_status) !== ST.Canceled);
+    if (!list.length) throw new Skip('没有到港 PDI，拿不到照片，不做');
+    // 有照片的优先（已完成的再优先）
+    let pick = null;
+    for (const o of [...list].sort((a, b) => (Number(b.mcs_status) === ST.Completed) - (Number(a.mcs_status) === ST.Completed))) {
+      const types = new Set((await listFiles(o.mcs_consultationorderid)).map(fileType));
+      if (['001', '002', '003'].every((t) => types.has(t))) { pick = o; break; }
+    }
+    if (!pick) throw new Error(`到港 PDI ${list.map((o) => o.mcs_name).join('、')} 里都没有齐全的铭牌 / 远照 / 工时照`);
+    item.srcPdiId = guid(pick.mcs_consultationorderid);
+    item.srcPdiNumber = pick.mcs_name;
+    item.srcInfo = { model: clean(pick.mcs_model), tonnage: pick.mcs_tonnage ?? '', hours: pick.mcs_systemrunningtime ?? '' };
+    ctx.log(`照片、机型、吨位、工时从到港 PDI ${pick.mcs_name}（${fmt(pick, 'mcs_status')}）拿`);
+  }
 
   const pdi = {
     async resolve(item, ctx) {
@@ -1185,7 +1212,7 @@
       const label = dealerKind ? '经销商 PDI' : '到港 PDI';
       const eq = await findEquipment(item.machineNo);
       item.equipmentId = guid(eq.mcs_equipmentid);
-      if (dealerKind && item.chain && !(await equipmentHasDealer(item.equipmentId))) throw new Skip('直销设备（没有经销商），不做经销商 PDI');
+      if (dealerKind && (item.chain || noPhoto(item)) && !(await equipmentHasDealer(item.equipmentId))) throw new Skip('直销设备（没有经销商），不做经销商 PDI');
       const filter = dealerKind ? ` and mcs_preacceptancetypes eq ${PRE_DEALER}`
         : ` and (mcs_preacceptancetypes eq null or (mcs_preacceptancetypes ne ${PRE_DEALER} and mcs_preacceptancetypes ne ${PRE_SHIPMENT}))`;
       const orders = await findOrders(item.equipmentId, TYPE.Arrival, filter);
@@ -1197,8 +1224,8 @@
         }
         useOrder(item, o);
         ctx.log(`用已有的${label} ${o.mcs_name}（${fmt(o, 'mcs_status')}）`);
-      } else if (dealerKind && item.chain) {
-        // 全流程里的经销商 PDI：没有就新建，并派给自己
+      } else if (dealerKind && (item.chain || noPhoto(item))) {
+        // 全流程 / 无照片的经销商 PDI：没有就新建，并派给自己
         await createOrder(item, ctx, {
           'mcs_equipment@odata.bind': `/mcs_equipments(${item.equipmentId})`, mcs_ordertype: TYPE.Arrival, mcs_preacceptancetypes: PRE_DEALER,
         }, '经销商 PDI');
@@ -1212,6 +1239,7 @@
         const cur = await readOrder(item.orderId, 'mcs_serviceordermode');
         item.dealerMode = Number(cur.mcs_serviceordermode) === 20;
       }
+      if (noPhoto(item)) await findSourcePdi(item, ctx);
     },
     accept: acceptOrder,
     // 经销商 PDI 没有出发 / 到达，接单后直接上传附件、现场完工
@@ -1220,6 +1248,7 @@
     async photos(item, ctx) {
       const st = await orderStatus(item, ctx);
       if (FINISHED_STATUS.includes(st) && st !== ST.CompletionOnSite) return;
+      if (noPhoto(item)) return copyPhotosFromPdi(item, ctx, item.srcPdiId, item.srcPdiNumber, '做经销商 PDI');
       await uploadFolderPhotos(item, ctx, 'pdi');
     },
     async fields(item, ctx) { await writeOrderFields(item, ctx, pdiKindOf(item)); },
@@ -1575,6 +1604,7 @@
     'shipment-transfer': { steps: SHIPMENT_STEPS, impl: shipment },
     pdi: { steps: PDI_STEPS, impl: pdi },
     'pdi-dealer': { steps: PDI_STEPS, impl: pdi },
+    'pdi-dealer-nophoto': { steps: PDI_STEPS, impl: pdi }, // 经销商 PDI（无照片，照片从到港 PDI 拿）
     rust: { steps: RUST_STEPS, impl: rust },
     'pdi-transfer': { steps: PDI_TRANSFER_STEPS, impl: pdiTransfer },
     'dealer-pdi-assign': { steps: ASSIGN_STEPS, impl: dealerPdiAssign },

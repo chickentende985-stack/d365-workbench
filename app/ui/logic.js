@@ -294,6 +294,7 @@ function createLogic(transport) {
         else {
           info = [eq.model, eq.directSale ? '直销' : `经销商 ${eq.dealer}`, eq.status].filter(Boolean).join('｜');
           if (eq.duplicates > 1) warns.push('这个机号在 D365 里有多条设备记录');
+          if (rec.funcKey === 'full|pdi-dealer-nophoto' && eq.directSale) warns.push('直销设备（没有经销商），执行时会跳过');
         }
       } catch (e) { errors.push(`查机号出错：${e.message}`); }
     }
