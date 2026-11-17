@@ -20,6 +20,7 @@
 <div id="updateBar" class="updatebar" hidden></div>
 <nav class="tabs" id="tabs">
   <button class="tab active" data-view="machine">机器查询</button>
+  <button class="tab" data-view="quick">做单</button>
   <button class="tab" data-view="excel">Excel 导入</button>
   <button class="tab" data-view="progress">执行进度</button>
   <button class="tab" data-view="records">完成记录</button>
@@ -35,6 +36,86 @@
     </form>
     <div class="chips" id="machineHistory"></div>
     <div id="machineResult" class="empty">输入机号查看这台机的设备档案、所有订单、照片和 Service Ticket 齐不齐。</div>
+  </section>
+
+  <!-- 做单：和以前脚本面板一样，选功能 → 选机号（照片文件夹 / 粘贴）→ 演练或开始 -->
+  <section class="view" id="view-quick" hidden>
+    <div class="card">
+      <div class="formgrid">
+        <label>功能
+          <select id="qFunc" class="input">
+            <optgroup label="用照片文件夹">
+              <option value="full|pdi">PDI（到港预验收，有照片）</option>
+              <option value="full|pdi-dealer">经销商 PDI（有照片）</option>
+              <option value="full|rust">防锈运转</option>
+              <option value="full|handover">交机（有照片）</option>
+              <option value="full|chain">全流程：到港 PDI → 防锈 → 经销商 PDI</option>
+            </optgroup>
+            <optgroup label="不用照片（照片从这台机的 PDI 拿）">
+              <option value="full|pdi-dealer-nophoto">经销商 PDI（无照片）</option>
+              <option value="full|handover-pdi">交机（无照片）</option>
+            </optgroup>
+            <optgroup label="PDI / 防锈指派">
+              <option value="transfer|pdi">PDI 转移：建到港 PDI → 服务转移给工程师</option>
+              <option value="transfer|pdi-dealer">经销商 PDI 派单：建经销商 PDI → Assign</option>
+              <option value="rust-dispatch|rust">防锈派单：本月 Created 的防锈单 → Assign</option>
+              <option value="transfer|pdi-shipment">Shipment PDI 转移（按单号）</option>
+            </optgroup>
+            <optgroup label="设备">
+              <option value="equipment-change|pdi">设备变更</option>
+            </optgroup>
+          </select>
+        </label>
+        <label data-q="handover">交机日期<input id="qHandoverDate" type="date" class="input"></label>
+        <label data-q="target"><span id="qTargetLabel">转移给</span><input id="qTarget" class="input" placeholder="工程师姓名（要能唯一匹配）"></label>
+      </div>
+      <p id="qHint" class="muted small"></p>
+    </div>
+
+    <!-- 照片文件夹里的机号 -->
+    <div class="card" data-q="folder">
+      <div class="toolbar">
+        <b>照片总文件夹</b><span id="qRoot" class="muted"></span><span class="grow"></span>
+        <button class="btn" id="qPickRoot">换文件夹…</button>
+        <button class="btn" id="qRescan">重新扫描</button>
+      </div>
+      <div class="toolbar" style="margin-top:8px">
+        <button class="chip" id="qAll">全选</button><button class="chip" id="qNone">全不选</button>
+        <input id="qFilter" class="input" placeholder="按机号筛选" style="width:200px">
+        <span class="grow"></span><span id="qCount" class="muted"></span>
+      </div>
+      <div class="tablewrap" style="max-height:420px;overflow:auto;margin-top:8px"><table class="grid" id="qFolderTable"></table></div>
+    </div>
+
+    <!-- 粘贴机号 -->
+    <div class="card" data-q="paste">
+      <label class="stack"><span id="qPasteLabel">机号（一行一台；后面可以空格跟工时，例如 “SY215C12345 120”）</span>
+        <textarea id="qMachines" class="input" rows="8" spellcheck="false"></textarea></label>
+      <label class="stack" data-q="shipdesc">Description（每张单都写这一句；空着就不改）<input id="qShipDesc" class="input"></label>
+    </div>
+
+    <!-- 设备变更 -->
+    <div class="card" data-q="ec">
+      <div class="formgrid">
+        <label>Service Dealer（不填不改）<input id="qEcDealer" class="input" placeholder="例如 C&amp;O TRACTORS LTD"></label>
+        <label>Dealer（不填就和 Service Dealer 一样）<input id="qEcDealerMain" class="input"></label>
+        <label>Equipment Type（不选不改）
+          <select id="qEcType" class="input"><option value="">不改</option><option value="10">Host</option><option value="20">Second-hand Machine</option>
+            <option value="30">Sample Machine</option><option value="40">Legal Machine</option><option value="50">Trial Machine</option>
+            <option value="60">Spare Machine</option><option value="70">Rental Machine</option></select></label>
+        <label>Warranty Policy Value（不填不改）<input id="qEcWarrantyValue" class="input" inputmode="numeric"></label>
+        <label>Warranty Policy Month（1～60，不填不改）<input id="qEcWarrantyMonth" class="input" inputmode="numeric"></label>
+        <label>Responsible Service Engineer<input id="qEcEngineer" class="input" placeholder="不填用设置里的默认值"></label>
+        <label>Service Manager<input id="qEcManager" class="input" placeholder="不填用设置里的默认值"></label>
+        <label>Change Remarks<input id="qEcRemark" class="input" placeholder="不填用设置里的默认值"></label>
+      </div>
+    </div>
+
+    <div class="toolbar" style="margin-top:12px">
+      <span id="qSummary" class="muted"></span><span class="grow"></span>
+      <button class="btn" id="qDry" title="只读数据，把每一步要写什么列在日志里，不改 D365">先演练一遍（不改 D365）</button>
+      <button class="btn btn-primary" id="qStart">开始执行</button>
+    </div>
   </section>
 
   <!-- Excel 导入 -->

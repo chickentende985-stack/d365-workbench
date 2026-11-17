@@ -118,6 +118,169 @@
     if (view === 'progress') refreshProgress();
     if (view === 'records') refreshRecords();
     if (view === 'settings') loadSettings();
+    if (view === 'quick') quickInit();
+  }
+
+  // ---------- 做单（和以前脚本面板一样的用法）----------
+  const Q_FOLDER = new Set(['full|pdi', 'full|pdi-dealer', 'full|rust', 'full|handover', 'full|chain']);
+  const Q_TARGET = { 'transfer|pdi': '转移给', 'transfer|pdi-dealer': '派给', 'rust-dispatch|rust': '派给', 'transfer|pdi-shipment': '转移给' };
+  const Q_HINT = {
+    'full|pdi': '找这台机已有的到港 PDI → 接单 → 出发 → 到达 → 上传 1～4 号照片 → Usable / 机型 / 吨位 / Check Passed / 工时 → 现场完工 → 生成 Service Ticket → 提交审核。',
+    'full|pdi-dealer': '找这台机已有的经销商 PDI → 接单（直销模式的单要出发、到达）→ 照片 → 字段 → 现场完工 → Service Ticket → 提交审核。',
+    'full|rust': '本月防锈做完的跳过、没做完的接着做、没有就新建 → 接单 → 照片（有 5 号照片时 3、4 都是工时照）→ 字段（再加设备位置 uk、保修 60 个月）→ 现场完工 → 提交审核。',
+    'full|handover': '建或接着用交机单 → 交机日期 / 联系人 → 接单 → 出发 → 到达 → 字段 → 文件夹里的照片 → PDI 的 Service Ticket → 现场完工 → 提交审核。',
+    'full|chain': '每台机依次做：到港 PDI → 防锈 → 经销商 PDI（直销设备不做经销商 PDI）。',
+    'full|pdi-dealer-nophoto': '经销商 PDI：照片、机型、吨位、工时都从这台机的到港 PDI 拿；没有经销商 PDI 就新建并派给自己；直销设备跳过。',
+    'full|handover-pdi': '交机：照片、工时、Service Ticket 都从这台机的 PDI 拿；联系人从客户那里找。',
+    'transfer|pdi': '建到港 PDI（已有且负责人还是自己就直接用），再永久服务转移给填的人；已转出去的跳过。',
+    'transfer|pdi-dealer': '找或建经销商 PDI，再用 Assign 派给填的人（人员所属经销商要和订单一致）。',
+    'rust-dispatch|rust': '找这台机本月还在 Created 的防锈单，用 Assign 派给填的人；本月做过的跳过。',
+    'transfer|pdi-shipment': '按单号确认是 Shipment PDI → 写 Description → 永久服务转移。这里一行写一个单号。',
+    'equipment-change|pdi': '新建（或接着用没提交的）设备变更单 → 写下面这些要改的字段 → 核对 → 提交审批。设备上已经是这些值的跳过。',
+  };
+  const qState = { scan: null, checked: new Set(), loaded: false };
+  function qFunc() { return $('qFunc').value; }
+
+  async function quickInit() {
+    if (!qState.loaded) {
+      qState.loaded = true;
+      try { const last = localStorage.getItem('wb.quick.func'); if (last && [...$('qFunc').options].some((o) => o.value === last)) $('qFunc').value = last; } catch { /* 无所谓 */ }
+      $('qHandoverDate').value = new Date().toISOString().slice(0, 10);
+    }
+    quickSync();
+  }
+
+  function quickSync() {
+    const f = qFunc();
+    try { localStorage.setItem('wb.quick.func', f); } catch { /* 无所谓 */ }
+    const show = (key, on) => { for (const el of document.querySelectorAll(`#view-quick [data-q="${key}"]`)) el.hidden = !on; };
+    show('folder', Q_FOLDER.has(f));
+    show('paste', !Q_FOLDER.has(f));
+    show('handover', f === 'full|handover' || f === 'full|handover-pdi');
+    show('target', Boolean(Q_TARGET[f]));
+    show('ec', f === 'equipment-change|pdi');
+    show('shipdesc', f === 'transfer|pdi-shipment');
+    $('qTargetLabel').textContent = Q_TARGET[f] || '';
+    $('qPasteLabel').textContent = f === 'transfer|pdi-shipment' ? '单号（一行一个）'
+      : '机号（一行一台；后面可以空格跟工时，例如 “SY215C12345 120”）';
+    $('qHint').textContent = Q_HINT[f] || '';
+    if (Q_FOLDER.has(f) && !qState.scan) quickScan();
+    quickRenderFolder();
+  }
+
+  async function quickScan() {
+    $('qFolderTable').innerHTML = '<tr><td class="muted">扫描中…</td></tr>';
+    try {
+      const st = await call('settings_get');
+      $('qRoot').textContent = st.photo_root || '（还没选，点右边“换文件夹…”）';
+      if (!st.photo_root) { qState.scan = { machines: {} }; quickRenderFolder(); return; }
+      qState.scan = await call('photo_scan');
+      // 默认勾上照片齐全的
+      qState.checked = new Set(Object.entries(qState.scan.machines).filter(([, m]) => quickFolderOk(m)).map(([k]) => k));
+    } catch (e) {
+      qState.scan = { machines: {}, error: errText(e) };
+    }
+    quickRenderFolder();
+  }
+
+  function quickNeedKeys(m) {
+    const rust = qFunc() === 'full|rust';
+    return m.files.includes('5') ? (rust ? ['1', '2', '3', '4', '5'] : ['1', '2', '3', '5']) : ['1', '2', '3', '4'];
+  }
+  const quickFolderOk = (m) => quickNeedKeys(m).every((k) => m.files.includes(k));
+
+  function quickRenderFolder() {
+    const table = $('qFolderTable');
+    if (!Q_FOLDER.has(qFunc())) return;
+    const scan = qState.scan;
+    if (!scan) return;
+    if (scan.error) { table.innerHTML = `<tr><td class="bad">${h(scan.error)}</td></tr>`; return; }
+    const kw = $('qFilter').value.trim().toUpperCase();
+    const rows = Object.entries(scan.machines).filter(([k]) => !kw || k.includes(kw)).sort(([a], [b]) => a.localeCompare(b));
+    if (!rows.length) {
+      table.innerHTML = `<tr><td class="muted">${Object.keys(scan.machines).length ? '没有匹配的机号' : '这个文件夹下面没有“机台号_机型_吨位_工作时间”子文件夹'}</td></tr>`;
+    } else {
+      table.innerHTML = `<thead><tr><th></th><th>机号</th><th>机型</th><th>吨位</th><th>工时</th><th>照片</th><th>说明</th></tr></thead><tbody>${rows.map(([k, m]) => {
+        const need = quickNeedKeys(m);
+        const lack = need.filter((x) => !m.files.includes(x));
+        const note = [lack.length ? `少 ${lack.map((x) => `${x}.jpg`).join('、')}` : '', m.formatOk ? '' : '文件夹名不是“机台号_机型_吨位_工作时间”', m.hours ? '' : '没有工时'].filter(Boolean).join('；');
+        const on = qState.checked.has(k);
+        return `<tr class="${on ? '' : 'off'}"><td><input type="checkbox" data-qm="${h(k)}" ${on ? 'checked' : ''}></td><td class="mono">${h(k)}</td><td>${h(m.model)}</td><td>${h(m.tonnage)}</td><td>${h(m.hours)}</td>
+          <td>${['1', '2', '3', '4', '5'].map((x) => `<span class="ph ${m.files.includes(x) ? 'y' : (need.includes(x) ? 'n' : '')}">${x}</span>`).join('')}</td>
+          <td class="${lack.length ? 'bad' : 'muted'}">${h(note)}</td></tr>`;
+      }).join('')}</tbody>`;
+    }
+    quickCount();
+  }
+
+  function quickCount() {
+    const f = qFunc();
+    let n = 0;
+    if (Q_FOLDER.has(f)) n = [...qState.checked].filter((k) => qState.scan?.machines?.[k]).length;
+    else n = $('qMachines').value.split(/\r?\n/).filter((x) => x.trim()).length;
+    $('qCount').textContent = Q_FOLDER.has(f) ? `已勾选 ${n} 台 / 共 ${Object.keys(qState.scan?.machines || {}).length} 台` : '';
+    $('qSummary').textContent = n ? `共 ${n} ${f === 'transfer|pdi-shipment' ? '张单' : '台机'}` : '';
+    return n;
+  }
+
+  // 拼成和 Excel 导入一样的任务，交给后台
+  function quickJob() {
+    const f = qFunc();
+    const name = $('qFunc').selectedOptions[0].textContent.trim();
+    const fields = {};
+    let lines;
+    if (Q_FOLDER.has(f)) {
+      lines = [...qState.checked].filter((k) => qState.scan?.machines?.[k]).sort();
+      fields.pasteMachines = lines.join('\n');
+    } else {
+      lines = $('qMachines').value.split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
+      if (f === 'transfer|pdi-shipment') {
+        fields.shipOrders = lines.join('\n');
+        fields.shipDesc = $('qShipDesc').value.trim();
+      } else if (f === 'equipment-change|pdi') fields.ecMachines = lines.join('\n');
+      else fields.pasteMachines = lines.join('\n');
+    }
+    if (!lines.length) throw new Error(Q_FOLDER.has(f) ? '没有勾选机号' : (f === 'transfer|pdi-shipment' ? '没填单号' : '没填机号'));
+    if (Q_TARGET[f]) {
+      fields.transferTarget = $('qTarget').value.trim();
+      if (!fields.transferTarget) throw new Error(`没填“${Q_TARGET[f]}”`);
+    }
+    let title = name;
+    if (f === 'full|handover' || f === 'full|handover-pdi') {
+      fields.handoverDate = $('qHandoverDate').value || '';
+      title += `（交机日期 ${fields.handoverDate || '当天'}）`;
+    }
+    if (Q_TARGET[f]) title += `（${Q_TARGET[f]} ${fields.transferTarget}）`;
+    if (f === 'equipment-change|pdi') {
+      Object.assign(fields, {
+        ecDealerMain: $('qEcDealerMain').value.trim(), ecDealer: $('qEcDealer').value.trim(), ecType: $('qEcType').value,
+        ecWarrantyValue: $('qEcWarrantyValue').value.trim(), ecWarrantyMonth: $('qEcWarrantyMonth').value.trim(),
+      });
+      for (const [id, key] of [['qEcEngineer', 'ecEngineer'], ['qEcManager', 'ecManager'], ['qEcRemark', 'ecRemark']]) {
+        const v = $(id).value.trim();
+        if (v) fields[key] = v;
+      }
+      if (!fields.ecDealerMain && !fields.ecDealer && !fields.ecType && !fields.ecWarrantyValue && !fields.ecWarrantyMonth) {
+        throw new Error('Dealer、Service Dealer、Equipment Type、质保都没填，没有要变更的内容');
+      }
+      const m = fields.ecWarrantyMonth;
+      if (m && !(/^\d+$/.test(m) && Number(m) >= 1 && Number(m) <= 60)) throw new Error('Warranty Policy Month 要填 1～60 的整数');
+      if (fields.ecWarrantyValue && !/^\d+$/.test(fields.ecWarrantyValue)) throw new Error('Warranty Policy Value 要填整数');
+    }
+    return { job: { func: f, title, fields }, count: lines.length };
+  }
+
+  async function quickRun(dryRun) {
+    let built;
+    try { built = quickJob(); } catch (e) { toast(errText(e), true); return; }
+    const { job, count } = built;
+    const unit = job.func === 'transfer|pdi-shipment' ? '张单' : '台机';
+    if (!dryRun && !confirm(`开始执行：${job.title}\n共 ${count} ${unit}。\n\n确定开始？`)) return;
+    try {
+      await call('engine_load_job', job, dryRun);
+      toast(dryRun ? '开始演练：只读数据，在“执行进度”的日志里看每一步会写什么' : '已开始执行');
+      showView('progress');
+    } catch (e) { toast(errText(e), true); }
   }
 
   // ---------- 设置 ----------
@@ -147,6 +310,7 @@
         default_location: { address: $('setLocAddress').value.trim(), lat, lng },
         ec_defaults: ec,
       });
+      qState.scan = null; // 照片文件夹可能换了：做单页下次重新扫描
       toast('设置已保存');
     } catch (e) { toast(errText(e), true); }
   }
@@ -656,6 +820,30 @@
     }
     $('btnExportProgress').onclick = exportProgress;
     $('btnSaveSettings').onclick = saveSettings;
+    // 做单
+    $('qFunc').onchange = quickSync;
+    $('qMachines').oninput = quickCount;
+    $('qFilter').oninput = quickRenderFolder;
+    $('qRescan').onclick = quickScan;
+    $('qPickRoot').onclick = async () => {
+      try {
+        const p = await call('pick_folder', '');
+        if (!p) return;
+        await call('settings_set', { photo_root: p });
+        await quickScan();
+      } catch (e) { toast(errText(e), true); }
+    };
+    $('qAll').onclick = () => { for (const k of Object.keys(qState.scan?.machines || {})) qState.checked.add(k); quickRenderFolder(); };
+    $('qNone').onclick = () => { qState.checked.clear(); quickRenderFolder(); };
+    $('qFolderTable').addEventListener('change', (ev) => {
+      const k = ev.target.dataset?.qm;
+      if (!k) return;
+      if (ev.target.checked) qState.checked.add(k); else qState.checked.delete(k);
+      ev.target.closest('tr').classList.toggle('off', !ev.target.checked);
+      quickCount();
+    });
+    $('qDry').onclick = () => quickRun(true);
+    $('qStart').onclick = () => quickRun(false);
     $('btnScanFolder').onclick = scanFolder;
     $('btnPickFolder').onclick = async () => {
       try {

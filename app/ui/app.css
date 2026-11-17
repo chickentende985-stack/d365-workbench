@@ -109,3 +109,13 @@ textarea.remark:focus { outline: 2px solid var(--primary); outline-offset: -1px;
 .formgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px 14px; }
 .formgrid label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
 .formgrid .input { color: inherit; font-size: 14px; }
+
+/* 做单 */
+.stack { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); margin-top: 8px; }
+.stack .input, .stack textarea { color: var(--text); font-size: 14px; font-family: ui-monospace, Consolas, monospace; }
+select.input { background: #fff; }
+.ph { display: inline-block; min-width: 18px; text-align: center; border-radius: 3px; font-size: 11px; margin-right: 2px; }
+.ph.y { background: var(--ok-weak); color: var(--ok); }
+.ph.n { background: var(--err-weak); color: var(--err); }
+#qFolderTable tr.off td { opacity: .5; }
+.bad { color: var(--err); }
