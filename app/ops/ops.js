@@ -12,7 +12,7 @@
  */
 (() => {
   'use strict';
-  const VERSION = '2.1.1';
+  const VERSION = '2.2.0';
   const ORDER = 'mcs_consultationorder';
   const ORDERS = 'mcs_consultationorders';
   const ZERO_GUID = '00000000-0000-0000-0000-000000000000';
@@ -645,9 +645,11 @@
       let hours = Number(item.workingHours);
       if (!(hours > 0) && item.folder && Number(item.folder.hours) >= 0 && item.folder.hours !== '') hours = Math.max(Number(item.folder.hours), 0.1);
       if (!(hours > 0)) {
-        hours = Number((await readOrder(item.pdiOrderId, 'mcs_systemrunningtime')).mcs_systemrunningtime);
+        // 工时照是从哪张单拷的，工时就用那张单的，两边对得上
+        const src = await findPhotoSource(item, ctx);
+        hours = Number(src.info?.hours);
         if (!(hours > 0)) hours = 0.1;
-        ctx.log(`工作小时取 PDI ${item.pdiOrderNumber} 的 ${hours}`);
+        ctx.log(`工作小时取${src.label} ${src.number} 的 ${hours}（和拷过去的工时照一致）`);
       }
       const eq = (await query('mcs_equipments', 'mcs_accumulatedrunningtime,_mcs_personnel_30_value', `mcs_equipmentid eq ${item.equipmentId}`))[0] || {};
       const floor = Number(eq.mcs_accumulatedrunningtime);
@@ -671,7 +673,8 @@
       const st = await orderStatus(item, ctx);
       if (st !== ST.Arrived && st !== ST.Rejected) return;
       if (item.folder) return uploadFolderPhotos(item, ctx, 'handover'); // 交机（用文件夹里的照片）
-      await copyPhotosFromPdi(item, ctx, item.pdiOrderId, item.pdiOrderNumber, '交机');
+      const src = await findPhotoSource(item, ctx);
+      await copyPhotosFromPdi(item, ctx, src.id, src.number, '交机', src.label);
     },
 
     // 8. Service Ticket：PDI 附件里有就下载，没有就从 PDI 的 Service Completion 生成
@@ -735,7 +738,7 @@
   };
 
   // 从另一张 PDI 的附件里拿四张照片（铭牌、远照、工时照、其他照片）上传到这张单；这张单上已有的类型不重复传
-  async function copyPhotosFromPdi(item, ctx, srcId, srcNo, purpose) {
+  async function copyPhotosFromPdi(item, ctx, srcId, srcNo, purpose, srcLabel = 'PDI') {
     const have = item.sim.newOrder ? new Set(item.sim.files || []) : await orderFileTypes(item, ctx);
     const pdiFiles = await listFiles(srcId);
     const newest = (type) => pdiFiles.filter((f) => fileType(f) === type && f.FileUrl)
@@ -748,16 +751,17 @@
         // PDI 一共就三张照片（铭牌、远照、工时照）：只能把整机远照再用一次当“其他照片”
         if (!src && newest(FILE.far.type)) {
           src = newest(FILE.far.type);
-          ctx.log(`PDI ${srcNo} 里除了铭牌/远照/工时照没有别的照片，“其他照片”用整机远照再传一次`);
+          ctx.log(`${srcLabel} ${srcNo} 里除了铭牌/远照/工时照没有别的照片，“其他照片”用整机远照再传一次`);
         } else if (src) {
-          ctx.log(`PDI ${srcNo} 里没有“其他照片”，选用它的 ${src.Name}（和铭牌/远照/工时照不重复）`);
+          ctx.log(`${srcLabel} ${srcNo} 里没有“其他照片”，选用它的 ${src.Name}（和铭牌/远照/工时照不重复）`);
         }
       }
-      if (!src) throw new Error(`PDI ${srcNo} 里没有“${spec.label}”照片，无法自动${purpose}`);
+      if (!src) throw new Error(`${srcLabel} ${srcNo} 里没有“${spec.label}”照片，无法自动${purpose}`);
       const blob = await download(src.FileUrl, `PDI 的“${spec.label}”`);
-      ctx.log(`上传 ${spec.label}（来自 PDI ${srcNo} 的 ${src.Name}）`);
+      ctx.log(`上传 ${spec.label}（来自 ${srcLabel} ${srcNo} 的 ${src.Name}）`);
       await uploadFile(item, ctx, blob, spec, extOf(src.Name, 'jpg'));
     }
+    if (!ctx.dry) rememberCopied(item.orderId);
   }
 
   function pickOtherPhoto(item, files, newest) {
@@ -1036,7 +1040,7 @@
     const payload = {};
     const changes = [];
     const folder = item.folder || item.srcInfo || {};
-    const srcName = item.folder ? '照片文件夹名里' : `到港 PDI ${item.srcPdiNumber || ''} 里`;
+    const srcName = item.folder ? '照片文件夹名里' : `${item.photoSrc?.label || '到港 PDI'} ${item.photoSrc?.number || item.srcPdiNumber || ''} 里`;
     if (!has(o.mcs_equipmentusagestatus)) { payload.mcs_equipmentusagestatus = USAGE_USABLE; changes.push('Usable'); }
     if (!has(o.mcs_model)) {
       if (!folder.model) throw new Error(`Model 是空的，${srcName}也没有机型`);
@@ -1206,24 +1210,108 @@
   function pdiKindOf(item) { return ['pdi-dealer', 'pdi-dealer-nophoto'].includes(item.kind) ? 'pdi-dealer' : 'pdi'; }
   const noPhoto = (item) => item.kind === 'pdi-dealer-nophoto';
 
-  // 没有照片的经销商 PDI：照片、机型、吨位、工时都从这台机的到港 PDI 拿
-  async function findSourcePdi(item, ctx) {
-    const filter = ` and (mcs_preacceptancetypes eq null or (mcs_preacceptancetypes ne ${PRE_DEALER} and mcs_preacceptancetypes ne ${PRE_SHIPMENT}))`;
-    const list = (await query(ORDERS, 'mcs_consultationorderid,mcs_name,mcs_status,statecode,mcs_model,mcs_tonnage,mcs_systemrunningtime,createdon',
-      `_mcs_equipment_value eq ${item.equipmentId} and mcs_ordertype eq ${TYPE.Arrival}${filter}`, '&$orderby=createdon desc&$top=20'))
-      .filter((o) => Number(o.statecode) === 0 && Number(o.mcs_status) !== ST.Canceled);
-    if (!list.length) throw new Skip('没有到港 PDI，拿不到照片，不做');
-    // 有照片的优先（已完成的再优先）
-    let pick = null;
-    for (const o of [...list].sort((a, b) => (Number(b.mcs_status) === ST.Completed) - (Number(a.mcs_status) === ST.Completed))) {
-      const types = new Set((await listFiles(o.mcs_consultationorderid)).map(fileType));
-      if (['001', '002', '003'].every((t) => types.has(t))) { pick = o; break; }
+  // 没有照片的单（经销商 PDI 无照片、交机无照片）：照片、机型、吨位、工时从这台机“最近的”一张有齐全照片的订单拿。
+  // “最近”按照片上传时间算（不是建单时间）；只看铭牌 / 远照 / 工时照三张都有的单。
+  // 从别的单拷过来的照片不当来源（本机拷过的记在 localStorage；别人拷的靠比对照片认出来），不然水印会一层叠一层。
+  const COPIED_KEY = 'wb-photo-copied-orders';
+  function copiedOrders() {
+    try { return new Set(JSON.parse(localStorage.getItem(COPIED_KEY) || '[]')); } catch { return new Set(); }
+  }
+  function rememberCopied(orderId) {
+    try {
+      const list = [...copiedOrders(), guid(orderId)].slice(-3000);
+      localStorage.setItem(COPIED_KEY, JSON.stringify([...new Set(list)]));
+    } catch { /* 记不下来不影响做单 */ }
+  }
+  // 两张照片是不是同一张（拷贝时会重新压缩、多一层水印，像素不完全一样）：缩成 17×16 灰度比相邻亮度（dHash），
+  // 256 位里不一样的少于 30 位就算同一张。实测：拷贝的 1～8 位，同一台机不同时间拍的 86 位以上。
+  async function photoHash(file) {
+    if (file.hash) return file.hash;
+    const bmp = await createImageBitmap(await download(file.FileUrl, '照片'));
+    const W = 17;
+    const H = 16;
+    const c = document.createElement('canvas');
+    c.width = W;
+    c.height = H;
+    const g = c.getContext('2d');
+    g.drawImage(bmp, 0, 0, W, H);
+    const d = g.getImageData(0, 0, W, H).data;
+    const bits = [];
+    for (let y = 0; y < H; y += 1) {
+      for (let x = 0; x < W - 1; x += 1) {
+        const i = (y * W + x) * 4;
+        bits.push(d[i] + d[i + 1] + d[i + 2] > d[i + 4] + d[i + 5] + d[i + 6] ? 1 : 0);
+      }
     }
-    if (!pick) throw new Error(`到港 PDI ${list.map((o) => o.mcs_name).join('、')} 里都没有齐全的铭牌 / 远照 / 工时照`);
-    item.srcPdiId = guid(pick.mcs_consultationorderid);
-    item.srcPdiNumber = pick.mcs_name;
-    item.srcInfo = { model: clean(pick.mcs_model), tonnage: pick.mcs_tonnage ?? '', hours: pick.mcs_systemrunningtime ?? '' };
-    ctx.log(`照片、机型、吨位、工时从到港 PDI ${pick.mcs_name}（${fmt(pick, 'mcs_status')}）拿`);
+    file.hash = bits;
+    return bits;
+  }
+  async function sameFarShot(set, others) {
+    try {
+      const h = await photoHash(set.far);
+      for (const other of others) {
+        const h2 = await photoHash(other.far);
+        if (h.reduce((n, v, i) => n + (v !== h2[i]), 0) < 30) return other;
+      }
+    } catch { /* 比不了就当不是拷贝 */ }
+    return null;
+  }
+  const TYPE_TEXT = { 1: 'Shipment PDI', 2: 'PDI', 3: '交机单', 4: '开机单', 5: '防锈单' };
+  function orderLabel(o) {
+    if (Number(o.mcs_ordertype) === TYPE.Arrival && Number(o.mcs_preacceptancetypes) === PRE_DEALER) return '经销商 PDI';
+    if (Number(o.mcs_ordertype) === TYPE.Arrival) return '到港 PDI';
+    return TYPE_TEXT[o.mcs_ordertype] || '订单';
+  }
+
+  async function findPhotoSource(item, ctx) {
+    if (item.photoSrc?.id) return item.photoSrc;
+    if (item.srcPdiId) { // 老版本做到一半的任务：接着用当时选好的
+      item.photoSrc = { id: item.srcPdiId, number: item.srcPdiNumber, label: '到港 PDI', info: item.srcInfo || {} };
+      return item.photoSrc;
+    }
+    const all = (await query(ORDERS, 'mcs_consultationorderid,mcs_name,mcs_status,statecode,mcs_ordertype,mcs_preacceptancetypes,mcs_model,mcs_tonnage,mcs_systemrunningtime,createdon',
+      `_mcs_equipment_value eq ${item.equipmentId}`, '&$orderby=createdon desc&$top=30'))
+      .filter((o) => Number(o.statecode) === 0 && Number(o.mcs_status) !== ST.Canceled);
+    const copied = copiedOrders();
+    const self = guid(item.orderId);
+    const candidates = all.filter((o) => guid(o.mcs_consultationorderid) !== self && !copied.has(guid(o.mcs_consultationorderid))).slice(0, 10);
+    // 每张单的一套照片（铭牌 / 远照 / 工时照各取最新一张）；这一套的时间 = 三张里最早上传的那张
+    const sets = [];
+    for (const o of candidates) {
+      const files = await listFiles(o.mcs_consultationorderid);
+      const newest = (t) => files.filter((f) => fileType(f) === t && f.FileUrl)
+        .sort((x, y) => String(y.CreateTime || '').localeCompare(String(x.CreateTime || '')))[0];
+      const set = ['001', '002', '003'].map(newest);
+      if (set.some((f) => !f)) continue;
+      sets.push({ o, far: set[1], when: set.map((f) => String(f.CreateTime || '')).sort()[0] });
+    }
+    sets.sort((x, y) => y.when.localeCompare(x.when));
+    // 从最新的开始挑；如果它的整机远照和更早某张单的是同一张照片（以前拷过来的），它不算，再看下一张
+    let best = null;
+    for (let i = 0; i < sets.length && !best; i += 1) {
+      const older = sets.slice(i + 1);
+      const twin = older.length ? await sameFarShot(sets[i], older) : null;
+      if (twin) {
+        ctx.log(`${orderLabel(sets[i].o)} ${sets[i].o.mcs_name} 的照片是从 ${twin.o.mcs_name} 拷过来的，不用它`);
+        rememberCopied(sets[i].o.mcs_consultationorderid);
+        continue;
+      }
+      best = sets[i];
+    }
+    if (!best) {
+      if (!all.length) throw new Skip('这台机没有别的订单，拿不到照片，不做');
+      throw new Error(`这台机的订单（${candidates.map((o) => o.mcs_name).join('、') || '无'}）里都没有齐全的铭牌 / 远照 / 工时照`);
+    }
+    const o = best.o;
+    // 工时要和工时照对得上：优先用照片来源那张单的工时；机型、吨位它没有就从别的单补
+    const firstHas = (f) => [o, ...all].find((x) => has(x[f]))?.[f];
+    item.photoSrc = {
+      id: guid(o.mcs_consultationorderid), number: o.mcs_name, label: orderLabel(o), when: best.when.slice(0, 10),
+      info: { model: clean(firstHas('mcs_model')), tonnage: firstHas('mcs_tonnage') ?? '', hours: o.mcs_systemrunningtime ?? firstHas('mcs_systemrunningtime') ?? '' },
+    };
+    item.srcInfo = item.photoSrc.info; // 填机型、吨位、工时用
+    ctx.log(`照片从最近的${item.photoSrc.label} ${o.mcs_name} 拿（照片上传于 ${item.photoSrc.when}，${fmt(o, 'mcs_status')}）`);
+    return item.photoSrc;
   }
 
   const pdi = {
@@ -1259,7 +1347,7 @@
         const cur = await readOrder(item.orderId, 'mcs_serviceordermode');
         item.dealerMode = Number(cur.mcs_serviceordermode) === 20;
       }
-      if (noPhoto(item)) await findSourcePdi(item, ctx);
+      if (noPhoto(item)) await findPhotoSource(item, ctx);
     },
     accept: acceptOrder,
     // 经销商 PDI 没有出发 / 到达，接单后直接上传附件、现场完工
@@ -1268,7 +1356,10 @@
     async photos(item, ctx) {
       const st = await orderStatus(item, ctx);
       if (FINISHED_STATUS.includes(st) && st !== ST.CompletionOnSite) return;
-      if (noPhoto(item)) return copyPhotosFromPdi(item, ctx, item.srcPdiId, item.srcPdiNumber, '做经销商 PDI');
+      if (noPhoto(item)) {
+        const src = await findPhotoSource(item, ctx);
+        return copyPhotosFromPdi(item, ctx, src.id, src.number, '做经销商 PDI', src.label);
+      }
       await uploadFolderPhotos(item, ctx, 'pdi');
     },
     async fields(item, ctx) { await writeOrderFields(item, ctx, pdiKindOf(item)); },
