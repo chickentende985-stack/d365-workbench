@@ -170,16 +170,18 @@ class Tests(unittest.TestCase):
             'SANY HEAVY MACHINERY Date of manufacture 2025.12 Serial SY030',
             '16:54 2026/03/30',
             'random text',
+            'Jun 23, 2026 at\nCalne SNII 9PT United Kingdom',
         ]
-        out = self._run_ops_js('parseStamp', 'cases.map(f)'.replace('cases', json.dumps(cases)))
+        out = self._run_ops_js('parseStamp', 'cases.map((x) => f(x, false))'.replace('cases', json.dumps(cases)))
         self.assertEqual(out[0]['date'], '2026-06-23 14:39')
         self.assertIn('SN11 9PT', out[0]['place'])
         self.assertEqual(out[1]['date'], '2026-08-24 10:12')
         self.assertEqual(out[2]['date'], '2026-08-24 09:05')
         self.assertEqual(out[3]['date'], '2026-03-03 16:40')
-        self.assertIsNone(out[4])
+        self.assertIsNone(out[4])  # 铭牌上只有生产年月
         self.assertEqual(out[5]['date'], '2026-03-30 16:54')
         self.assertIsNone(out[6])
+        self.assertEqual(out[7]['date'], '2026-06-23')  # Windows OCR 漏了时刻：远照上有完整日期也算
 
     def test_windows_ocr(self):
         # 只在 Windows 上跑（GitHub 打包机器）：画一张带文字的图，看 Windows OCR 能不能读出来

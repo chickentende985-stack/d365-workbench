@@ -12,7 +12,7 @@
  */
 (() => {
   'use strict';
-  const VERSION = '2.3.0';
+  const VERSION = '2.3.1';
   const ORDER = 'mcs_consultationorder';
   const ORDERS = 'mcs_consultationorders';
   const ZERO_GUID = '00000000-0000-0000-0000-000000000000';
@@ -1267,7 +1267,7 @@
   // 读照片上的文字要靠工作台（Windows 自带 OCR）：window.wbPhotoText([base64]) → [{text}|{error}]；没有这个函数 / 用不了返回 null
   const MONTHS = 'jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec';
   const MONTH_NO = Object.fromEntries(MONTHS.split('|').map((m, i) => [m, i + 1]));
-  function parseStamp(text) {
+  function parseStamp(text, needTime = true) {
     const t = String(text || '').replace(/[|]/g, ' ');
     const time = t.match(/\b([01]?\d|2[0-3])\s?[:：]\s?([0-5]\d)(?:\s?[:：]\s?[0-5]\d)?\b/);
     let y; let m; let d;
@@ -1282,14 +1282,15 @@
       [, d, m, y] = mt;
       m = MONTH_NO[m.toLowerCase()];
     }
-    if (!mt || !time) return null; // 要同时有日期和时刻才算（铭牌上只有生产年月，不算）
+    // 整机远照：有完整日期就算（Windows OCR 有时会漏掉时刻）；铭牌：日期和时刻都要有（铭牌上本来就印着生产日期）
+    if (!mt || (needTime && !time)) return null;
     m = Number(m);
     d = Number(d);
     if (m > 12 && d <= 12) [m, d] = [d, m];
     if (!(m >= 1 && m <= 12 && d >= 1 && d <= 31)) return null;
     const place = (t.match(/\b(United Kingdom|England|Scotland|Wales|Northern Ireland|Ireland|UK)\b/i) || [])[0] || '';
     const postcode = (t.match(/\b[A-Z]{1,2}\d[A-Z\d]?\s?\d[A-Z]{2}\b/) || [])[0] || '';
-    return { date: `${y}-${pad(m)}-${pad(d)} ${pad(time[1])}:${time[2]}`, place: [postcode, place].filter(Boolean).join(' '), text: t.replace(/\s+/g, ' ').slice(0, 200) };
+    return { date: `${y}-${pad(m)}-${pad(d)}${time ? ` ${pad(time[1])}:${time[2]}` : ''}`, place: [postcode, place].filter(Boolean).join(' '), text: t.replace(/\s+/g, ' ').slice(0, 200) };
   }
   async function photoForOcr(file) {
     const bmp = await createImageBitmap(await download(file.FileUrl, '照片'));
@@ -1308,11 +1309,11 @@
   // 先看整机远照，再看铭牌（工时照不看：仪表屏幕上本来就有日期时间，会误判）
   async function findStamp(set) {
     if (typeof window.wbPhotoText !== 'function') return null;
-    for (const file of [set.far, set.nameplate]) {
+    for (const [file, needTime] of [[set.far, false], [set.nameplate, true]]) {
       if (!file) continue;
       const res = await window.wbPhotoText([await photoForOcr(file)]);
       if (!res) return null;
-      const found = parseStamp(res[0]?.text);
+      const found = parseStamp(res[0]?.text, needTime);
       if (found) return found;
     }
     return false;
