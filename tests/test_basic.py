@@ -144,7 +144,7 @@ class Tests(unittest.TestCase):
             ';const f=globalThis.__d365Error;console.log(JSON.stringify([f(502,%s),f(400,%s),f(500,%s)]))' % (
                 json.dumps(html), json.dumps(json.dumps({'error': {'message': '字段不对'}})),
                 json.dumps(json.dumps({'error': {'message': html}})))
-        out = json.loads(subprocess.run(['node', '-e', code], capture_output=True, text=True, check=True).stdout)
+        out = json.loads(subprocess.run(['node', '-'], input=code, capture_output=True, text=True, encoding='utf-8', check=True).stdout)
         self.assertTrue(out[0].startswith('[临时出错]') and '502 Bad Gateway' in out[0] and '<' not in out[0])
         self.assertEqual(out[1], '字段不对')
         self.assertTrue(out[2].startswith('[临时出错]'))
