@@ -39,6 +39,13 @@ FOLDER_KINDS = {'chain', 'pdi', 'pdi-dealer', 'rust', 'handover'}
 CHAIN_STEPS = (('pdi', '到港 PDI'), ('rust', '防锈'), ('pdi-dealer', '经销商 PDI'))
 FINISHED = ('done', 'skipped', 'failed')
 RETRY_DELAY = 5  # 出错后等几秒重试一次
+TEMP_TAG = '[临时出错]'  # ops.js 给服务器 502/503/504、网络断开这类错误加的前缀
+TEMP_RETRY_DELAYS = (15, 30, 60)  # 临时出错：等久一点，多试几次
+STEP_LABELS = {
+    'resolve': '找设备 / 找订单', 'prepare': '准备', 'accept': '接单', 'setOff': '出发', 'arrive': '到达',
+    'photos': '上传照片', 'fields': '填字段', 'onSite': '现场完工', 'ticket': '生成服务工单', 'submit': '提交审核',
+    'transfer': '转单', 'description': '写描述', 'assign': '指派', 'fill': '填设备变更',
+}
 
 
 def ops_source():
@@ -111,6 +118,9 @@ class OpsRunner:
         self._pause = False
         self._skip = False
         self.state = self._load()
+        if self.state:
+            self.state.pop('working', None)
+            self.state.pop('waiting', None)
         if self.state and self.state.get('status') == 'running':
             # 上次程序关掉时还在跑：先停着，等你点“继续”（避免一打开程序就自动改数据）
             self.state['status'] = 'paused'
@@ -189,6 +199,7 @@ class OpsRunner:
                 if cur:
                     if self.running():
                         self._skip = True
+                        self._log('收到跳过：%s 这一步做完就跳过（不用再点）' % (cur.get('machineNo') or cur.get('orderNumberInput')))
                     else:
                         self._mark_skip(cur)
                         self._save()
@@ -213,6 +224,7 @@ class OpsRunner:
                 'engine': 'native', 'status': s['status'], 'title': s.get('title'), 'dryRun': s.get('dryRun'),
                 'createdAt': s.get('createdAt', ''),
                 'currentIndex': s.get('currentIndex', 0), 'pauseReason': s.get('pauseReason', ''),
+                'workingOn': self._working_text(s),
                 'items': [{
                     'machineNo': (x.get('machineNo') or x.get('orderNumberInput', '')) + ('（%s）' % x['chainLabel'] if x.get('chainLabel') else ''),
                     'stage': x.get('stage', ''),
@@ -221,6 +233,21 @@ class OpsRunner:
                 } for x in s['items']],
                 'log': '\n'.join(s.get('log', [])),
             }
+
+    @staticmethod
+    def _working_text(s):
+        """正在做哪一项、哪一步、做了多久（一步里面的日志要等这一步做完才出来，这里先告诉你没卡住）。"""
+        if s.get('status') != 'running':
+            return None
+        now = time.time()
+        w = s.get('waiting')
+        if w:
+            return {'index': w['index'], 'text': '等 %d 秒后重试' % max(0, int(w['until'] - now))}
+        w = s.get('working')
+        if w:
+            label = STEP_LABELS.get(w.get('step') or '', w.get('step') or '下一步')
+            return {'index': w['index'], 'text': '正在%s… 已 %d 秒' % (label, int(now - w['since']))}
+        return None
 
     def _refresh_folders(self):
         """继续时：之前因为找不到照片文件夹出错的，按现在的设置再找一次。"""
@@ -250,6 +277,26 @@ class OpsRunner:
                 return i
         return None
 
+    def _wait(self, seconds):
+        end = time.time() + seconds
+        while time.time() < end:
+            with self._lock:
+                s = self.state
+                if not s or self._pause or s.get('status') != 'running':
+                    break
+                if self._skip:  # 等重试的时候点了跳过：直接跳过这一台
+                    self._skip = False
+                    cur = self._current()
+                    if cur:
+                        cur['tries'] = 0
+                        self._mark_skip(cur)
+                        self._save()
+                    break
+            time.sleep(0.5)
+        with self._lock:
+            if self.state:
+                self.state.pop('waiting', None)
+
     def _mark_skip(self, item):
         item['stage'] = 'skipped'
         item['skipReason'] = item.get('skipReason') or '你手动跳过了'
@@ -260,6 +307,9 @@ class OpsRunner:
             return
         self._pause = False
         self._skip = False
+        if self.state:
+            self.state.pop('working', None)
+            self.state.pop('waiting', None)
         self._thread = threading.Thread(target=self._run, name='ops', daemon=True)
         self._thread.start()
 
@@ -310,17 +360,21 @@ class OpsRunner:
                 except OSError as e:
                     opts['photos'] = {}
                     log.warning('读照片失败：%s', e)
+            with self._lock:
+                s['working'] = {'index': idx, 'step': item.get('next') or '', 'since': time.time()}
             try:
                 res = self.browser.ops_step(source, version, kind, item, opts)
             except Exception as e:  # noqa: BLE001 - 浏览器/登录问题：停下来，不算这台出错
                 with self._lock:
+                    s.pop('working', None)
                     s['status'] = 'paused'
                     s['pauseReason'] = str(e) or e.__class__.__name__
                     self._log('后台连不上 D365，已暂停：%s' % s['pauseReason'])
                     self._save()
                 return
-            retry_wait = False
+            retry_wait = 0
             with self._lock:
+                s.pop('working', None)
                 new_item = res.get('item') or item
                 for line in res.get('logs') or []:
                     self._log(line)
@@ -337,12 +391,24 @@ class OpsRunner:
                     self._log(s['pauseReason'])
                     self._save()
                     return
-                if res.get('error'):
+                name = new_item.get('machineNo') or new_item.get('orderNumberInput')
+                if res.get('error') and self._skip:
+                    # 出错时你点了跳过：就跳过这一台，不再重试，也不把“跳过”留给下一台
+                    self._skip = False
+                    new_item['tries'] = 0
+                    new_item['error'] = ''
+                    self._mark_skip(new_item)
+                elif res.get('error'):
                     tries = int(new_item.get('tries') or 0) + 1
-                    if tries < 2:
+                    temp = str(res['error']).startswith(TEMP_TAG)
+                    limit = len(TEMP_RETRY_DELAYS) + 1 if temp else 2
+                    if tries < limit:
                         new_item['tries'] = tries
-                        self._log('%s：出错，%d 秒后重试这一步' % (new_item.get('machineNo') or new_item.get('orderNumberInput'), RETRY_DELAY))
-                        retry_wait = True
+                        retry_wait = TEMP_RETRY_DELAYS[tries - 1] if temp else RETRY_DELAY
+                        if temp:
+                            self._log('%s：D365 服务器暂时出错，%d 秒后重试这一步（第 %d/%d 次）' % (name, retry_wait, tries, limit - 1))
+                        else:
+                            self._log('%s：出错，%d 秒后重试这一步' % (name, retry_wait))
                     else:
                         new_item['stage'] = 'failed'
                         new_item['error'] = res['error']
@@ -355,6 +421,8 @@ class OpsRunner:
                         self._skip = False
                         self._mark_skip(new_item)
                 s['items'][idx] = new_item
+                if retry_wait:
+                    s['waiting'] = {'index': idx, 'until': time.time() + retry_wait}
                 self._save()
             if retry_wait:
-                time.sleep(RETRY_DELAY)  # 不占着锁等，界面照样能刷新进度
+                self._wait(retry_wait)  # 不占着锁等，界面照样能刷新进度；等的时候点跳过 / 暂停马上生效

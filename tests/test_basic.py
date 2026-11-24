@@ -19,6 +19,7 @@ from app.server import make_server  # noqa: E402
 
 
 class FakeBrowser:
+    flaky = 0
     def status(self):
         return {'loggedIn': True, 'user': '测试', 'userId': 'u1'}
 
@@ -40,6 +41,9 @@ class FakeBrowser:
             item['stage'] = 'skipped'
             item['skipReason'] = '没有 PDI'
             return {'item': item, 'logs': ['跳过'], 'done': True}
+        if item.get('machineNo') == 'FLAKY' and step == 1 and self.flaky > 0:
+            self.flaky -= 1
+            return {'item': item, 'logs': [], 'done': False, 'error': '[临时出错] D365 服务器暂时出错（502 Bad Gateway）'}
         if item.get('machineNo') == 'BAD' and step == 1:
             return {'item': item, 'logs': ['出错'], 'done': False, 'error': '坏了'}
         if item.get('machineNo') == 'STOP' and step == 1 and not item.get('paused'):
@@ -102,6 +106,48 @@ class Tests(unittest.TestCase):
         self.assertEqual(r2.snapshot()['items'][0]['stage'], 'done')
         r2.control('clear')
         self.assertIsNone(ops.OpsRunner(b).snapshot())
+
+    def test_ops_temp_error_retries_and_skip(self):
+        from app import ops
+        ops.TEMP_RETRY_DELAYS = (0, 0, 0)
+        b = FakeBrowser()
+        b.flaky = 3  # 临时出错 3 次，第 4 次好了：不算出错
+        r = ops.OpsRunner(b)
+        r.start({'func': 'full|handover-pdi', 'title': 't', 'fields': {'pasteMachines': 'FLAKY'}}, dry_run=True)
+        snap = self._wait_ops(r)
+        self.assertEqual(snap['items'][0]['stage'], 'done')
+        self.assertIn('第 3/3 次', snap['log'])
+        r.control('clear')
+        # 等重试的时候点跳过：只跳过这一台，下一台不受影响
+        ops.TEMP_RETRY_DELAYS = (3, 3, 3)
+        b.flaky = 9
+        r.start({'func': 'full|handover-pdi', 'title': 't', 'fields': {'pasteMachines': 'FLAKY\nOK1'}}, dry_run=True)
+        deadline = time.time() + 5
+        while 'waiting' not in (r.state or {}) and time.time() < deadline:
+            time.sleep(0.05)
+        self.assertIn('重试', r.snapshot()['workingOn']['text'])
+        r.control('skip')
+        snap = self._wait_ops(r)
+        self.assertEqual([x['stage'] for x in snap['items']], ['skipped', 'done'])
+        r.control('clear')
+        ops.TEMP_RETRY_DELAYS = (15, 30, 60)
+
+    def test_ops_js_cleans_html_errors(self):
+        import shutil
+        import subprocess
+        if not shutil.which('node'):
+            self.skipTest('没有 node')
+        js = open(os.path.join(os.path.dirname(__file__), '..', 'app', 'ops', 'ops.js'), encoding='utf-8').read()
+        html = '<html><head><title>502 Bad Gateway</title></head><body>x</body></html>' + '<!-- padding -->' * 20
+        probe = js.replace('  async function api(path', '  globalThis.__d365Error = d365Error;\n  async function api(path', 1)
+        code = 'globalThis.window={};globalThis.document={};globalThis.location={origin:""};' + probe + \
+            ';const f=globalThis.__d365Error;console.log(JSON.stringify([f(502,%s),f(400,%s),f(500,%s)]))' % (
+                json.dumps(html), json.dumps(json.dumps({'error': {'message': '字段不对'}})),
+                json.dumps(json.dumps({'error': {'message': html}})))
+        out = json.loads(subprocess.run(['node', '-e', code], capture_output=True, text=True, check=True).stdout)
+        self.assertTrue(out[0].startswith('[临时出错]') and '502 Bad Gateway' in out[0] and '<' not in out[0])
+        self.assertEqual(out[1], '字段不对')
+        self.assertTrue(out[2].startswith('[临时出错]'))
 
     def _photo_root(self):
         root = tempfile.mkdtemp()

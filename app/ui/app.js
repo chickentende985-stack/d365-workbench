@@ -862,7 +862,7 @@
           const key = `${taskKey}|${x.machineNo}`;
           const info = { machineNo: x.machineNo, orderNumber: x.orderNumber, orderId: x.orderId, title: s.title || '', stage: x.stage };
           return `<tr><td>${i + 1}</td><td class="mono">${h(x.machineNo)}${current}</td><td class="mono">${orderLink(x.orderId, x.orderNumber)}</td>
-            <td><span class="badge ${badge}">${h(STAGE[x.stage] || x.stage)}</span></td><td>${h(x.error || x.skipReason)}</td>
+            <td><span class="badge ${badge}">${h(STAGE[x.stage] || x.stage)}</span></td><td>${s.workingOn && s.workingOn.index === i ? `<span class="muted">${h(s.workingOn.text)}</span>` : h(x.error || x.skipReason)}</td>
             ${remarkCells(key, info, remarkCache[key])}</tr>`;
         }).join('')}</tbody></table>`;
     } catch (e) {

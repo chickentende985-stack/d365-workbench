@@ -12,7 +12,7 @@
  */
 (() => {
   'use strict';
-  const VERSION = '2.1.0';
+  const VERSION = '2.1.1';
   const ORDER = 'mcs_consultationorder';
   const ORDERS = 'mcs_consultationorders';
   const ZERO_GUID = '00000000-0000-0000-0000-000000000000';
@@ -79,13 +79,28 @@
   class Pause extends Error {}
   class Skip extends Error {}
 
+  // 服务器返回的是网页（比如 502 Bad Gateway 的 HTML），不是 D365 的 JSON 错误：只留标题，并标成“临时出错”
+  const TEMP_TAG = '[临时出错] ';
+  function htmlTitle(text) {
+    const t = String(text || '');
+    if (!/<\s*(html|head|body|center|title)\b/i.test(t)) return '';
+    return (t.match(/<title>([^<]*)<\/title>/i)?.[1] || t.match(/<h1>([^<]*)<\/h1>/i)?.[1] || '网页错误').trim();
+  }
+  function tempMessage(status, title) {
+    return `${TEMP_TAG}D365 服务器暂时出错（${title || `HTTP ${status}`}），不是这台机的问题，一般过一两分钟就好`;
+  }
   function d365Error(status, text) {
+    let msg = text;
     try {
       const j = JSON.parse(text);
-      return j?.error?.message || text;
-    } catch {
-      return text || `HTTP ${status}`;
+      msg = j?.error?.message || text;
+    } catch { /* 不是 JSON */ }
+    const title = htmlTitle(msg);
+    // 网关错误（502/503/504）或返回网页，都算临时的，工作台会多等一会儿再重试
+    if (title || [502, 503, 504].includes(Number(status))) {
+      return tempMessage(status, title);
     }
+    return msg || `HTTP ${status}`;
   }
 
   async function api(path, { method = 'GET', body, headers = {}, formatted = false } = {}) {
@@ -94,9 +109,14 @@
     };
     if (formatted) h.Prefer = 'odata.include-annotations="OData.Community.Display.V1.FormattedValue"';
     if (body !== undefined) h['Content-Type'] = 'application/json; charset=utf-8';
-    const res = await fetch(`/api/data/v9.2/${path}`, {
-      method, headers: h, credentials: 'include', body: body === undefined ? undefined : JSON.stringify(body),
-    });
+    let res;
+    try {
+      res = await fetch(`/api/data/v9.2/${path}`, {
+        method, headers: h, credentials: 'include', body: body === undefined ? undefined : JSON.stringify(body),
+      });
+    } catch (e) {
+      throw new Error(`${TEMP_TAG}连不上 D365（${e.message || e}），一般是网络抖了一下`);
+    }
     const text = await res.text();
     if (!res.ok) throw new Error(d365Error(res.status, text).slice(0, 500));
     const entityId = (res.headers.get('OData-EntityId') || '').match(/\(([0-9a-f-]{36})\)/i)?.[1] || '';
@@ -224,7 +244,7 @@
 
   async function download(url, what) {
     const res = await fetch(url);
-    if (!res.ok) throw new Error(`下载${what}失败：HTTP ${res.status}`);
+    if (!res.ok) throw new Error(`${res.status >= 500 ? TEMP_TAG : ''}下载${what}失败：HTTP ${res.status}`);
     const blob = await res.blob();
     if (!blob.size) throw new Error(`${what}是空文件`);
     return blob;
@@ -264,7 +284,7 @@
         method: 'PUT', body: blob.slice(start, Math.min(start + chunk, blob.size)),
         headers: { 'Content-Type': 'application/octet-stream', 'x-ms-version': '2019-12-12', 'x-ms-date': new Date().toUTCString() },
       });
-      if (!res.ok) throw new Error(`上传文件失败：HTTP ${res.status}`);
+      if (!res.ok) throw new Error(`${res.status >= 500 ? TEMP_TAG : ''}上传文件失败：HTTP ${res.status}`);
       if (blob.size === 0) break;
     }
   }
