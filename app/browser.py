@@ -258,6 +258,12 @@ class Browser:
             ctx = self._ensure()
             page = ctx.new_page()
             try:
+                # 给 ops.js 用：读照片上的文字（Windows 自带 OCR），判断有没有时间地点水印
+                from . import ocr
+                page.expose_function('wbPhotoText', ocr.read_texts_b64)
+            except Exception as e:  # noqa: BLE001 - 用不了就算了，做单时会退回不判断水印
+                log.warning('照片文字识别接不上：%s', e)
+            try:
                 self._goto_d365(page, self._base() + '/')
                 page.goto(self._base() + '/api/data/v9.2/WhoAmI', wait_until='domcontentloaded', timeout=60000)
             except Exception:

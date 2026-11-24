@@ -12,7 +12,7 @@
  */
 (() => {
   'use strict';
-  const VERSION = '2.2.0';
+  const VERSION = '2.3.0';
   const ORDER = 'mcs_consultationorder';
   const ORDERS = 'mcs_consultationorders';
   const ZERO_GUID = '00000000-0000-0000-0000-000000000000';
@@ -1263,6 +1263,61 @@
     return TYPE_TEXT[o.mcs_ordertype] || '订单';
   }
 
+  // ---------- 照片上的时间地点水印（工程师用 Timestamp Camera 之类 App 拍照时打上的） ----------
+  // 读照片上的文字要靠工作台（Windows 自带 OCR）：window.wbPhotoText([base64]) → [{text}|{error}]；没有这个函数 / 用不了返回 null
+  const MONTHS = 'jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec';
+  const MONTH_NO = Object.fromEntries(MONTHS.split('|').map((m, i) => [m, i + 1]));
+  function parseStamp(text) {
+    const t = String(text || '').replace(/[|]/g, ' ');
+    const time = t.match(/\b([01]?\d|2[0-3])\s?[:：]\s?([0-5]\d)(?:\s?[:：]\s?[0-5]\d)?\b/);
+    let y; let m; let d;
+    let mt = t.match(/\b(20\d{2})\s?[/.\-年]\s?(\d{1,2})\s?[/.\-月]\s?(\d{1,2})/);
+    if (mt) [, y, m, d] = mt;
+    if (!mt && (mt = t.match(/\b(\d{1,2})\s?[/.\-]\s?(\d{1,2})\s?[/.\-]\s?(20\d{2})\b/))) [, d, m, y] = mt; // 英国写法：日/月/年
+    if (!mt && (mt = t.match(new RegExp(`\\b(${MONTHS})[a-z]*\\.?\\s*(\\d{1,2})(?:st|nd|rd|th)?,?\\s*(20\\d{2})`, 'i')))) {
+      [, m, d, y] = mt;
+      m = MONTH_NO[m.toLowerCase()];
+    }
+    if (!mt && (mt = t.match(new RegExp(`\\b(\\d{1,2})(?:st|nd|rd|th)?\\s*(${MONTHS})[a-z]*\\.?,?\\s*(20\\d{2})`, 'i')))) {
+      [, d, m, y] = mt;
+      m = MONTH_NO[m.toLowerCase()];
+    }
+    if (!mt || !time) return null; // 要同时有日期和时刻才算（铭牌上只有生产年月，不算）
+    m = Number(m);
+    d = Number(d);
+    if (m > 12 && d <= 12) [m, d] = [d, m];
+    if (!(m >= 1 && m <= 12 && d >= 1 && d <= 31)) return null;
+    const place = (t.match(/\b(United Kingdom|England|Scotland|Wales|Northern Ireland|Ireland|UK)\b/i) || [])[0] || '';
+    const postcode = (t.match(/\b[A-Z]{1,2}\d[A-Z\d]?\s?\d[A-Z]{2}\b/) || [])[0] || '';
+    return { date: `${y}-${pad(m)}-${pad(d)} ${pad(time[1])}:${time[2]}`, place: [postcode, place].filter(Boolean).join(' '), text: t.replace(/\s+/g, ' ').slice(0, 200) };
+  }
+  async function photoForOcr(file) {
+    const bmp = await createImageBitmap(await download(file.FileUrl, '照片'));
+    const k = Math.min(1, 2400 / Math.max(bmp.width, bmp.height));
+    const c = document.createElement('canvas');
+    c.width = Math.round(bmp.width * k);
+    c.height = Math.round(bmp.height * k);
+    c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+    const blob = await new Promise((res) => c.toBlob(res, 'image/jpeg', 0.92));
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    let bin = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+    return btoa(bin);
+  }
+  // 返回 {date, place, text}：有时间地点；false：没有；null：这台电脑读不了照片上的字
+  // 先看整机远照，再看铭牌（工时照不看：仪表屏幕上本来就有日期时间，会误判）
+  async function findStamp(set) {
+    if (typeof window.wbPhotoText !== 'function') return null;
+    for (const file of [set.far, set.nameplate]) {
+      if (!file) continue;
+      const res = await window.wbPhotoText([await photoForOcr(file)]);
+      if (!res) return null;
+      const found = parseStamp(res[0]?.text);
+      if (found) return found;
+    }
+    return false;
+  }
+
   async function findPhotoSource(item, ctx) {
     if (item.photoSrc?.id) return item.photoSrc;
     if (item.srcPdiId) { // 老版本做到一半的任务：接着用当时选好的
@@ -1283,23 +1338,43 @@
         .sort((x, y) => String(y.CreateTime || '').localeCompare(String(x.CreateTime || '')))[0];
       const set = ['001', '002', '003'].map(newest);
       if (set.some((f) => !f)) continue;
-      sets.push({ o, far: set[1], when: set.map((f) => String(f.CreateTime || '')).sort()[0] });
+      sets.push({ o, nameplate: set[0], far: set[1], when: set.map((f) => String(f.CreateTime || '')).sort()[0] });
     }
     sets.sort((x, y) => y.when.localeCompare(x.when));
-    // 从最新的开始挑；如果它的整机远照和更早某张单的是同一张照片（以前拷过来的），它不算，再看下一张
+    // 从最新的开始挑：
+    //   1. 整机远照和更早某张单的是同一张照片（以前拷过来的）→ 不用，看下一张
+    //   2. 照片上要有工程师拍照时打上的时间 + 地点（读照片上的文字，找日期和时间）→ 没有就不用，看下一张
     let best = null;
+    let ocrOff = false;
+    const noStamp = [];
     for (let i = 0; i < sets.length && !best; i += 1) {
+      const set = sets[i];
       const older = sets.slice(i + 1);
-      const twin = older.length ? await sameFarShot(sets[i], older) : null;
+      const twin = older.length ? await sameFarShot(set, older) : null;
       if (twin) {
-        ctx.log(`${orderLabel(sets[i].o)} ${sets[i].o.mcs_name} 的照片是从 ${twin.o.mcs_name} 拷过来的，不用它`);
-        rememberCopied(sets[i].o.mcs_consultationorderid);
+        ctx.log(`${orderLabel(set.o)} ${set.o.mcs_name} 的照片是从 ${twin.o.mcs_name} 拷过来的，不用它`);
+        rememberCopied(set.o.mcs_consultationorderid);
         continue;
       }
-      best = sets[i];
+      if (ocrOff) { best = set; break; }
+      const stamp = await findStamp(set);
+      if (stamp === null) { // 这台电脑读不了照片上的字：没法判断，退回用最新的
+        ocrOff = true;
+        ctx.log('⚠ 这台电脑读不了照片上的文字（Windows OCR 用不了），没法判断照片上有没有时间地点，直接用最新的一套；做完请自己看一眼照片');
+        best = set;
+        break;
+      }
+      if (!stamp) {
+        noStamp.push(`${orderLabel(set.o)} ${set.o.mcs_name}`);
+        continue;
+      }
+      set.stamp = stamp;
+      best = set;
     }
+    if (noStamp.length) ctx.log(`这些单的照片上认不出时间地点，不用：${noStamp.join('、')}`);
     if (!best) {
       if (!all.length) throw new Skip('这台机没有别的订单，拿不到照片，不做');
+      if (noStamp.length) throw new Skip(`这台机的订单照片上都认不出时间地点（看了 ${noStamp.join('、')}），没做；要补拍，或者手动挑照片`);
       throw new Error(`这台机的订单（${candidates.map((o) => o.mcs_name).join('、') || '无'}）里都没有齐全的铭牌 / 远照 / 工时照`);
     }
     const o = best.o;
@@ -1310,7 +1385,9 @@
       info: { model: clean(firstHas('mcs_model')), tonnage: firstHas('mcs_tonnage') ?? '', hours: o.mcs_systemrunningtime ?? firstHas('mcs_systemrunningtime') ?? '' },
     };
     item.srcInfo = item.photoSrc.info; // 填机型、吨位、工时用
-    ctx.log(`照片从最近的${item.photoSrc.label} ${o.mcs_name} 拿（照片上传于 ${item.photoSrc.when}，${fmt(o, 'mcs_status')}）`);
+    const stampText = best.stamp ? `照片上的时间 ${best.stamp.date || ''}${best.stamp.place ? `，地点 ${best.stamp.place}` : ''}` : `照片上传于 ${item.photoSrc.when}`;
+    item.photoSrc.stamp = best.stamp?.text || '';
+    ctx.log(`照片从最近的${item.photoSrc.label} ${o.mcs_name} 拿（${stampText}，${fmt(o, 'mcs_status')}）`);
     return item.photoSrc;
   }
 

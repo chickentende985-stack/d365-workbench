@@ -149,6 +149,64 @@ class Tests(unittest.TestCase):
         self.assertEqual(out[1], '字段不对')
         self.assertTrue(out[2].startswith('[临时出错]'))
 
+    def _run_ops_js(self, export, call):
+        import shutil
+        import subprocess
+        if not shutil.which('node'):
+            self.skipTest('没有 node')
+        js = open(os.path.join(os.path.dirname(__file__), '..', 'app', 'ops', 'ops.js'), encoding='utf-8').read()
+        probe = js.replace('  async function api(path', '  globalThis.__x = %s;\n  async function api(path' % export, 1)
+        code = 'globalThis.window={};globalThis.document={};globalThis.location={origin:""};' + probe + \
+            ';const f=globalThis.__x;console.log(JSON.stringify(%s))' % call
+        return json.loads(subprocess.run(['node', '-'], input=code, capture_output=True, text=True, encoding='utf-8', check=True).stdout)
+
+    def test_ops_js_parse_stamp(self):
+        # 照片上的时间地点水印：要同时有日期和时刻
+        cases = [
+            'Jun 23, 2026 at 14:39:35\nCalne Business Centre, Harris Road\nCalne\nEngland\nSN11 9PT\nUnited Kingdom',
+            '2026/08/24 10:12:05 Sittingbourne ME10 3RS',
+            '24/08/2026 09:05 Kent',
+            '3rd March 2026 16:40',
+            'SANY HEAVY MACHINERY Date of manufacture 2025.12 Serial SY030',
+            '16:54 2026/03/30',
+            'random text',
+        ]
+        out = self._run_ops_js('parseStamp', 'cases.map(f)'.replace('cases', json.dumps(cases)))
+        self.assertEqual(out[0]['date'], '2026-06-23 14:39')
+        self.assertIn('SN11 9PT', out[0]['place'])
+        self.assertEqual(out[1]['date'], '2026-08-24 10:12')
+        self.assertEqual(out[2]['date'], '2026-08-24 09:05')
+        self.assertEqual(out[3]['date'], '2026-03-03 16:40')
+        self.assertIsNone(out[4])
+        self.assertEqual(out[5]['date'], '2026-03-30 16:54')
+        self.assertIsNone(out[6])
+
+    def test_windows_ocr(self):
+        # 只在 Windows 上跑（GitHub 打包机器）：画一张带文字的图，看 Windows OCR 能不能读出来
+        if os.name != 'nt':
+            self.skipTest('不是 Windows')
+        import subprocess
+        import tempfile
+        from app import ocr
+        with tempfile.TemporaryDirectory() as tmp:
+            img = os.path.join(tmp, 'a.jpg')
+            ps = (
+                'Add-Type -AssemblyName System.Drawing;'
+                '$b=New-Object System.Drawing.Bitmap 1200,500;$g=[System.Drawing.Graphics]::FromImage($b);'
+                '$g.Clear([System.Drawing.Color]::FromArgb(90,120,160));'
+                '$f=New-Object System.Drawing.Font("Arial",36);'
+                '$g.DrawString("Jun 23, 2026 at 14:39:35",$f,[System.Drawing.Brushes]::White,40,60);'
+                '$g.DrawString("Calne SN11 9PT United Kingdom",$f,[System.Drawing.Brushes]::White,40,160);'
+                '$b.Save("%s",[System.Drawing.Imaging.ImageFormat]::Jpeg)' % img
+            )
+            subprocess.run(['powershell.exe', '-NoProfile', '-Command', ps], check=True)
+            with open(img, 'rb') as f:
+                res = ocr.read_texts([f.read()])
+        if res is None:
+            self.skipTest('这台机器没有 Windows OCR')
+        print('OCR:', res)
+        self.assertIn('2026', res[0].get('text', ''))
+
     def _photo_root(self):
         root = tempfile.mkdtemp()
         d = os.path.join(root, 'SY215C123_SY215C_22_120.5h')
