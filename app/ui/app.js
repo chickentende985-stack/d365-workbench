@@ -492,10 +492,21 @@
     try {
       await call('d365_login');
       toast('D365 登录成功，之后在后台运行');
-      await refreshStatus();
     } catch (e) {
-      toast(`登录没有完成：${errText(e)}`, true);
+      const msg = errText(e);
+      if (/无痕/.test(msg) && confirm(`无痕窗口没有登录成功：\n${msg}\n\n要不要改用这台电脑的 Windows 账号直接登录（和以前一样）？`)) {
+        btn.textContent = '正在用 Windows 账号登录…';
+        try {
+          await call('d365_login', false, true);
+          toast('D365 登录成功，之后在后台运行');
+        } catch (e2) {
+          toast(`登录没有完成：${errText(e2)}`, true);
+        }
+      } else {
+        toast(`登录没有完成：${msg}`, true);
+      }
     }
+    await refreshStatus();
     btn.disabled = false;
     btn.textContent = '登录 D365';
   }
@@ -523,7 +534,7 @@
       const s = await call('d365_login', true);
       toast(`已切换到：${s.user || '新账号'}`);
     } catch (e) {
-      toast(`切换没有完成：${errText(e)}`, true);
+      toast(`切换没有完成：${errText(e)}`, true, 15000);
     }
     await refreshStatus();
     btn.disabled = false;

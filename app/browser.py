@@ -398,9 +398,22 @@ class Browser:
             page.bring_to_front()
             host = urlparse(self._base()).netloc
             deadline = time.time() + timeout
+            seen = {'url': '', 'text': ''}
             while time.time() < deadline:
                 if page.is_closed():
-                    raise NeedLogin('登录窗口被关闭了')
+                    where = urlparse(seen['url'])
+                    log.warning('无痕窗口被关闭，最后停在 %s%s：%s', where.netloc, where.path, seen['text'])
+                    raise NeedLogin('无痕登录窗口被关闭了（最后停在 %s%s）%s' % (
+                        where.netloc, where.path, ('：' + seen['text']) if seen['text'] else ''))
+                try:
+                    seen['url'] = page.url
+                    # 记下登录页上的错误提示（比如公司要求用受管理的设备 AADSTS53000），关窗后好知道卡在哪
+                    seen['text'] = page.evaluate(
+                        "() => { const t = document.body ? document.body.innerText : '';"
+                        " const m = t.match(/AADSTS\\d+[^\\n]*/) || t.match(/[^\\n]*(can't get there|无法从此处|managed|受管理|not allowed|不允许|compliant)[^\\n]*/i);"
+                        " return m ? m[0].slice(0, 200) : ''; }") or seen['text']
+                except Exception:  # noqa: BLE001 - 页面在跳转/已关闭
+                    pass
                 if urlparse(page.url).netloc == host:
                     try:
                         r = page.evaluate(FETCH_JS, [self._base() + '/api/data/v9.2/WhoAmI', ACCEPT_HEADERS, 'GET', None])
@@ -413,7 +426,10 @@ class Browser:
                             return cookies
                     except Exception:  # noqa: BLE001 - 页面还在跳转
                         pass
-                page.wait_for_timeout(1500)
+                try:
+                    page.wait_for_timeout(1500)
+                except Exception:  # noqa: BLE001 - 窗口刚被关掉：下一圈会报“被关闭了”
+                    time.sleep(0.3)
             raise NeedLogin('%s 分钟内没有完成登录' % (timeout // 60))
         finally:
             try:
@@ -421,10 +437,15 @@ class Browser:
             except Exception:  # noqa: BLE001
                 pass
 
-    def login(self, timeout=300, switch=False):
+    def login(self, timeout=300, switch=False, windows_account=False):
         """弹出看得见的浏览器让你登录；能调通 D365 API 后保存登录状态并关窗，之后在后台运行。
         退出过（或者 switch=True 切换账号）：用无痕窗口登录，登好后把登录状态放进工作台自己的浏览器。"""
-        if switch or self.signed_out():
+        if windows_account:  # 不用无痕窗口了：直接用这台电脑的 Windows 账号登录（和以前一样）
+            try:
+                os.remove(self.signed_out_file)
+            except OSError:
+                pass
+        elif switch or self.signed_out():
             def fn_private():
                 self._close()
                 cookies = self._private_sign_in(timeout)
