@@ -58,6 +58,12 @@ class Api:
         finally:
             self._login_lock.release()
 
+    def d365_logout(self):
+        if self._app.ops.running():
+            raise RuntimeError('有任务正在执行，先在“执行进度”里点暂停，再退出')
+        self._app.browser.logout()
+        return self._app.browser.status()
+
     def d365_request(self, path, method='GET', body=None, headers=None):
         return self._app.browser.fetch(path, method, body, headers)
 

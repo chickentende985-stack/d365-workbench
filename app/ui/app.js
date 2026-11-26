@@ -45,6 +45,7 @@
     pill.className = 'pill pill-warn';
     $('btnLogin').hidden = false;
     $('btnSwitch').hidden = true;
+    $('btnLogout').hidden = true;
   }
   const store = {
     get(key, fallback) { try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; } },
@@ -56,13 +57,14 @@
     const pill = $('d365Pill');
     try {
       const s = await call('d365_status');
-      if (!s.loggedIn) { markLoggedOut(s.error); return; }
+      if (!s.loggedIn) { markLoggedOut(s.error); if (s.signedOut) $('d365Pill').textContent = 'D365 已退出'; return; }
       me = { userId: s.userId, user: s.user };
       pill.textContent = `D365 已登录：${s.user}`;
       pill.title = '';
       pill.className = 'pill pill-ok';
       $('btnLogin').hidden = true;
       $('btnSwitch').hidden = false;
+      $('btnLogout').hidden = false;
     } catch (e) {
       pill.textContent = 'D365：连不上';
       pill.title = errText(e);
@@ -498,9 +500,22 @@
     btn.textContent = '登录 D365';
   }
 
+  async function logout() {
+    const who = me?.user ? `（${me.user}）` : '';
+    if (!confirm(`退出 D365${who}？\n\n退出后工作台不会自己登录。要用时点“登录 D365”，会打开一个无痕窗口，可以登任何账号。`)) return;
+    try {
+      await call('d365_logout');
+      me = null;
+      toast('已退出 D365');
+    } catch (e) {
+      toast(`退出没有完成：${errText(e)}`, true);
+    }
+    await refreshStatus();
+  }
+
   async function switchAccount() {
     const who = me?.user ? `现在登录的是：${me.user}\n\n` : '';
-    if (!confirm(`${who}切换账号会退出现在的 D365 账号，弹出 Edge 窗口让你用另一个账号登录（在微软登录页选“使用其他帐户”）。\n\n确定切换？`)) return;
+    if (!confirm(`${who}切换账号会退出现在的 D365 账号，弹出一个无痕 Edge 窗口让你用另一个账号登录（如果出现“选择帐户”，选“使用其他帐户”）。\n\n确定切换？`)) return;
     const btn = $('btnSwitch');
     btn.disabled = true;
     btn.textContent = '请在弹出的 Edge 窗口里登录…';
@@ -896,6 +911,7 @@
     $('tabs').addEventListener('click', (ev) => { const b = ev.target.closest('.tab'); if (b) showView(b.dataset.view); });
     $('btnLogin').onclick = login;
     $('btnSwitch').onclick = switchAccount;
+    $('btnLogout').onclick = logout;
     $('btnEviLogin').onclick = eviLogin;
     $('eviResult').addEventListener('click', (ev) => { if (ev.target.closest('[data-evi-login]')) eviLogin(); });
     $('appVersion').title = '点这里检查更新';
