@@ -374,9 +374,14 @@ class Browser:
             self._pw = sync_playwright().start()
         browser = None
         last = None
-        for ch in _channels(self.get_settings().get('browser_channel', 'auto')):
+        # 优先用 Chrome：Edge 登录公司账号后会“自动切换配置文件”，把网页挪到你自己的 Edge 窗口里，
+        # 工作台这边的窗口就被关掉了。Chrome 没有这个功能。没装 Chrome 再用 Edge。
+        pref = self.get_settings().get('browser_channel', 'auto')
+        chans = ['chrome', 'msedge'] if pref in ('auto', '', None) else _channels(pref)
+        for ch in chans:
             try:
-                kw = {'headless': False, 'args': ['--disable-blink-features=AutomationControlled']}
+                kw = {'headless': False, 'args': ['--disable-blink-features=AutomationControlled', '--no-first-run',
+                                                  '--disable-features=SwitchIntranetSitesToWorkProfile,msEdgeAutoProfileSwitching,msImplicitSignin']}
                 if ch:
                     kw['channel'] = ch
                 browser = self._pw.chromium.launch(**kw)
@@ -390,7 +395,8 @@ class Browser:
             page = ctx.new_page()
             start = self.get_settings()['d365_url']
             start = self._select_account_url(ctx, start) or start
-            log.info('无痕窗口登录：%s', 'select_account' if 'prompt=select_account' in start else '直接打开 D365')
+            log.info('无痕窗口登录（%s）：%s', ch or 'chromium', 'select_account' if 'prompt=select_account' in start else '直接打开 D365')
+            reopened = 0
             try:
                 page.goto(start, wait_until='domcontentloaded', timeout=60000)
             except Exception:  # noqa: BLE001
@@ -400,6 +406,19 @@ class Browser:
             deadline = time.time() + timeout
             seen = {'url': '', 'text': ''}
             while time.time() < deadline:
+                if page.is_closed() and reopened < 2 and browser.is_connected():
+                    # 网页被挪走 / 关掉了，但这个窗口里已经有微软登录的 Cookie：再打开一次 D365，一般直接就登上了
+                    others = [x for x in ctx.pages if not x.is_closed()]
+                    reopened += 1
+                    where = urlparse(seen['url'])
+                    log.warning('无痕窗口的网页被关掉（停在 %s%s），重新打开 D365 第 %d 次', where.netloc, where.path, reopened)
+                    try:
+                        page = others[0] if others else ctx.new_page()
+                        if not others:
+                            page.goto(self.get_settings()['d365_url'], wait_until='domcontentloaded', timeout=60000)
+                    except Exception:  # noqa: BLE001
+                        pass
+                    continue
                 if page.is_closed():
                     where = urlparse(seen['url'])
                     log.warning('无痕窗口被关闭，最后停在 %s%s：%s', where.netloc, where.path, seen['text'])
