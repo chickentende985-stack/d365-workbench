@@ -15,9 +15,10 @@ import json
 import logging
 import queue
 import threading
+import re
 import time
 from concurrent.futures import Future
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 from . import paths
 
@@ -131,6 +132,222 @@ class Browser:
             self._error_since = None
             self.events.append({'time': time.strftime('%H:%M:%S'), 'message': '错误页停了 15 秒，重新打开 D365 接着做'})
             log.info('错误页超过 15 秒，重新打开 D365')
+            start = self.get_settings()['d365_url']
+            if switch:
+                # 公司电脑上 Edge 会直接用 Windows 登录的账号自动登录（单点登录），清 Cookie 也拦不住。
+                # 所以先问 D365 会跳到微软登录页的哪个地址，加上 prompt=select_account 再打开：一定先让你选账号。
+                start = self._select_account_url(ctx, start) or start
+            try:
+                page.goto(start, wait_until='domcontentloaded', timeout=60000)
+            except Exception as e:  # noqa: BLE001
+                log.warning('重新打开 D365 失败：%s', e)
+
+    def _run(self, fn, timeout=300):
+        fut = Future()
+        self._q.put((fn, fut))
+        return fut.result(timeout)
+
+    def shutdown(self):
+        try:
+            self._run(None, timeout=15)
+        except Exception:  # noqa: BLE001
+            pass
+
+    # ---------- 浏览器（只在工作线程里调用） ----------
+    def _base(self):
+        u = urlparse(self.get_settings()['d365_url'])
+        return '%s://%s' % (u.scheme, u.netloc)
+
+    def _close(self):
+        if self._ctx:
+            try:
+                self._ctx.storage_state(path=self.state_file)
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                self._ctx.close()
+            except Exception:  # noqa: BLE001
+                pass
+        self._ctx = None
+        self._api_page = None
+        self._work_page = None
+
+    def _on_dialog(self, dialog):
+        self.dialogs.append({'time': time.strftime('%H:%M:%S'), 'type': dialog.type, 'message': dialog.message[:500]})
+        log.info('页面弹窗（自动确定）：%s %s', dialog.type, dialog.message[:200])
+        try:
+            dialog.accept()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _on_ctx_closed(self, ctx):
+        """浏览器被关掉了（比如手动关了执行窗口）：下次用到时重新启动。"""
+        if self._ctx is ctx:
+            log.info('浏览器被关闭，下次需要时重新启动')
+            self._ctx = None
+            self._api_page = None
+            self._work_page = None
+
+    def _hook_page(self, page):
+        page.on('dialog', self._on_dialog)
+
+    def _launch(self, headed):
+        self._close()
+        if not self._pw:
+            from playwright.sync_api import sync_playwright
+            self._pw = sync_playwright().start()
+        settings = self.get_settings()
+        last = None
+        for ch in _channels(settings.get('browser_channel', 'auto')):
+            kw = dict(user_data_dir=self.profile, headless=not headed, accept_downloads=True,
+                      args=['--disable-blink-features=AutomationControlled'])
+            if headed:
+                kw['no_viewport'] = True
+            else:
+                kw['viewport'] = {'width': 1440, 'height': 900}
+                kw['user_agent'] = HEADLESS_UA
+            if ch:
+                kw['channel'] = ch
+            try:
+                self._ctx = self._pw.chromium.launch_persistent_context(**kw)
+                break
+            except Exception as e:  # noqa: BLE001 - 这个浏览器没装，换下一个
+                last = e
+        if not self._ctx:
+            raise RuntimeError('没有找到可用的浏览器（Edge 或 Chrome）。\n%s' % last)
+        self._headed = headed
+        # 持久化目录不保存会话 Cookie，把上次保存的补回去
+        try:
+            with open(self.state_file, encoding='utf-8') as f:
+                cookies = json.load(f).get('cookies', [])
+            if cookies:
+                self._ctx.add_cookies(cookies)
+        except (OSError, ValueError):
+            pass
+        except Exception:  # noqa: BLE001
+            pass
+        self._ctx.on('page', self._hook_page)
+        ctx = self._ctx
+        ctx.on('close', lambda *a: self._on_ctx_closed(ctx))
+        for page in self._ctx.pages:
+            self._hook_page(page)
+        log.info('浏览器已启动（%s，%s）', ch or 'chromium', '显示窗口' if headed else '后台')
+        return self._ctx
+
+    def _ensure(self):
+        want_headed = bool(self.get_settings().get('show_worker'))
+        if self._ctx is None or self._headed != want_headed:
+            self._launch(want_headed)
+        return self._ctx
+
+    def _goto_d365(self, page, url):
+        host = urlparse(self._base()).netloc
+        try:
+            page.goto(url, wait_until='domcontentloaded', timeout=60000)
+        except Exception:  # noqa: BLE001 - 跳转中断不要紧，下面看最后停在哪
+            pass
+        deadline = time.time() + 30
+        while urlparse(page.url).netloc != host and time.time() < deadline:
+            try:  # 停在微软登录页、要输账号密码 = 没法自动登录
+                if page.locator('input[type=email]:visible, input[type=password]:visible').count():
+                    break
+            except Exception:  # noqa: BLE001
+                pass
+            page.wait_for_timeout(500)
+        if urlparse(page.url).netloc != host:
+            raise NeedLogin('D365 未登录或登录已过期，请点“登录 D365”')
+
+    def _api(self):
+        page = self._api_page
+        host = urlparse(self._base()).netloc
+        if page is None or page.is_closed() or urlparse(page.url).netloc != host:
+            ctx = self._ensure()
+            page = ctx.new_page()
+            try:
+                # 给 ops.js 用：读照片上的文字（Windows 自带 OCR），判断有没有时间地点水印
+                from . import ocr
+                page.expose_function('wbPhotoText', ocr.read_texts_b64)
+            except Exception as e:  # noqa: BLE001 - 用不了就算了，做单时会退回不判断水印
+                log.warning('照片文字识别接不上：%s', e)
+            try:
+                self._goto_d365(page, self._base() + '/')
+                page.goto(self._base() + '/api/data/v9.2/WhoAmI', wait_until='domcontentloaded', timeout=60000)
+            except Exception:
+                page.close()
+                raise
+            self._api_page = page
+        return page
+
+    def _work(self):
+        page = self._work_page
+        host = urlparse(self._base()).netloc
+        if page is None or page.is_closed() or urlparse(page.url).netloc != host:
+            ctx = self._ensure()
+            page = ctx.new_page()
+            # 执行引擎只注入到这个执行页面（读数据用的页面不注入，避免两个页面同时去跑同一个任务）
+            page.add_init_script(
+                'if (location.host === %s) {\n' % json.dumps(host) + self.engine.source + '\n}'
+            )
+            self._goto_d365(page, self.get_settings()['d365_url'])
+            self._work_page = page
+        # 等执行引擎在页面里启动
+        for _ in range(120):
+            if page.evaluate('() => !!window.__d365BatchBridge'):
+                return page
+            page.wait_for_timeout(500)
+        raise RuntimeError('执行引擎 60 秒内没有在 D365 页面里启动')
+
+    def _fetch(self, path, method='GET', body=None, headers=None):
+        page = self._api()
+        hdr = dict(ACCEPT_HEADERS, **(headers or {}))
+        if body is not None:
+            hdr['Content-Type'] = 'application/json; charset=utf-8'
+        r = page.evaluate(FETCH_JS, [self._base() + '/api/data/v9.2/' + path, hdr, method, body])
+        if r['status'] == 401 or (r['status'] < 400 and r['body'] and 'json' not in r['ct']):
+            self._api_page = None
+            raise NeedLogin('D365 拒绝访问（HTTP %s），请重新登录' % r['status'])
+        return {'status': r['status'], 'body': r['body']}
+
+    # ---------- 对外接口（任意线程） ----------
+    # 切换账号时要清掉的网站数据（D365 自己 + 微软登录页记住的账号）
+    SIGN_IN_ORIGINS = ('https://login.microsoftonline.com', 'https://login.live.com', 'https://login.windows.net',
+                       'https://device.login.microsoftonline.com', 'https://www.office.com')
+
+    AUTHORIZE_RE = re.compile(r'/oauth2/(v2\.0/)?authorize', re.I)
+
+    def _select_account_url(self, ctx, start):
+        """顺着 D365 的跳转（不真的打开），找到微软登录页的地址，加上 prompt=select_account。找不到返回 None。"""
+        url = start
+        try:
+            for _ in range(6):
+                r = ctx.request.get(url, max_redirects=0, timeout=30000)
+                loc = r.headers.get('location')
+                if not (300 <= r.status < 400 and loc):
+                    return None
+                url = urljoin(url, loc)
+                if self.AUTHORIZE_RE.search(urlparse(url).path):
+                    url = re.sub(r'([?&])prompt=[^&]*&?', r'\1', url).rstrip('&?')
+                    return url + ('&' if '?' in url else '?') + 'prompt=select_account'
+        except Exception as e:  # noqa: BLE001 - 找不到就按原来的方式打开
+            log.warning('找微软登录地址：%s', e)
+        return None
+
+    def login(self, timeout=300, switch=False):
+        """弹出看得见的浏览器让你登录；能调通 D365 API 后保存登录状态并关窗，之后在后台运行。
+        switch=True：先把现在的登录清掉（Cookie 和 D365 / 微软登录页的网站数据），再让你用另一个账号登录。"""
+        def fn():
+            ctx = self._launch(headed=True)
+            host = urlparse(self._base()).netloc
+            page = ctx.pages[0] if ctx.pages else ctx.new_page()
+            if switch:
+                ctx.clear_cookies()
+                try:
+                    cdp = ctx.new_cdp_session(page)
+                    for origin in (self._base(),) + self.SIGN_IN_ORIGINS:
+                        cdp.send('Storage.clearDataForOrigin', {'origin': origin, 'storageTypes': 'all'})
+                    cdp.detach()
+                except Exception as e:  # noqa: BLE001 - 清不掉网站数据也没关系，Cookie 已经清了
+                    log.warning('清登录数据：%s', e)
             try:
                 page.goto(self.get_settings()['d365_url'], wait_until='domcontentloaded', timeout=60000)
             except Exception as e:  # noqa: BLE001
@@ -323,6 +540,17 @@ class Browser:
                     cdp.detach()
                 except Exception as e:  # noqa: BLE001 - 清不掉网站数据也没关系，Cookie 已经清了
                     log.warning('清登录数据：%s', e)
+                # 公司电脑上 Edge 会直接用 Windows 登录的账号自动登录（单点登录），清 Cookie 也拦不住。
+                # 所以第一次去微软登录页时加上 prompt=select_account：一定先让你选账号（选“使用其他帐户”）。
+                asked = {'done': False}
+
+                def ask_account(route):
+                    url = route.request.url
+                    if asked['done'] or 'prompt=' in url or route.request.resource_type != 'document':
+                        return route.continue_()
+                    asked['done'] = True
+                    return route.continue_(url=url + ('&' if '?' in url else '?') + 'prompt=select_account')
+                ctx.route(re.compile(r'^https://login\.(microsoftonline|windows)\.(com|net)/[^?]*/oauth2/(v2\.0/)?authorize'), ask_account)
             try:
                 page.goto(self.get_settings()['d365_url'], wait_until='domcontentloaded', timeout=60000)
             except Exception:  # noqa: BLE001
