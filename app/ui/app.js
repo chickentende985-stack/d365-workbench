@@ -44,6 +44,7 @@
     pill.title = message || '';
     pill.className = 'pill pill-warn';
     $('btnLogin').hidden = false;
+    $('btnSwitch').hidden = true;
   }
   const store = {
     get(key, fallback) { try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; } },
@@ -61,6 +62,7 @@
       pill.title = '';
       pill.className = 'pill pill-ok';
       $('btnLogin').hidden = true;
+      $('btnSwitch').hidden = false;
     } catch (e) {
       pill.textContent = 'D365：连不上';
       pill.title = errText(e);
@@ -496,6 +498,23 @@
     btn.textContent = '登录 D365';
   }
 
+  async function switchAccount() {
+    const who = me?.user ? `现在登录的是：${me.user}\n\n` : '';
+    if (!confirm(`${who}切换账号会退出现在的 D365 账号，弹出 Edge 窗口让你用另一个账号登录（在微软登录页选“使用其他帐户”）。\n\n确定切换？`)) return;
+    const btn = $('btnSwitch');
+    btn.disabled = true;
+    btn.textContent = '请在弹出的 Edge 窗口里登录…';
+    try {
+      const s = await call('d365_login', true);
+      toast(`已切换到：${s.user || '新账号'}`);
+    } catch (e) {
+      toast(`切换没有完成：${errText(e)}`, true);
+    }
+    await refreshStatus();
+    btn.disabled = false;
+    btn.textContent = '切换账号';
+  }
+
   function pickExcel() { $('excelFile').value = ''; $('excelFile').click(); }
 
   async function onExcelChosen() {
@@ -876,6 +895,7 @@
   function bind() {
     $('tabs').addEventListener('click', (ev) => { const b = ev.target.closest('.tab'); if (b) showView(b.dataset.view); });
     $('btnLogin').onclick = login;
+    $('btnSwitch').onclick = switchAccount;
     $('btnEviLogin').onclick = eviLogin;
     $('eviResult').addEventListener('click', (ev) => { if (ev.target.closest('[data-evi-login]')) eviLogin(); });
     $('appVersion').title = '点这里检查更新';

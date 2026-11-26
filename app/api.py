@@ -47,11 +47,13 @@ class Api:
     def d365_status(self):
         return self._app.browser.status()
 
-    def d365_login(self):
+    def d365_login(self, switch=False):
+        if switch and self._app.ops.running():
+            raise RuntimeError('有任务正在执行，先在“执行进度”里点暂停，再切换账号')
         if not self._login_lock.acquire(blocking=False):
             raise RuntimeError('登录窗口已经开着了')
         try:
-            self._app.browser.login()
+            self._app.browser.login(switch=bool(switch))
             return self._app.browser.status()
         finally:
             self._login_lock.release()

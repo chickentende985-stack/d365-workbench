@@ -303,12 +303,26 @@ class Browser:
         return {'status': r['status'], 'body': r['body']}
 
     # ---------- 对外接口（任意线程） ----------
-    def login(self, timeout=300):
-        """弹出看得见的浏览器让你登录；能调通 D365 API 后保存登录状态并关窗，之后在后台运行。"""
+    # 切换账号时要清掉的网站数据（D365 自己 + 微软登录页记住的账号）
+    SIGN_IN_ORIGINS = ('https://login.microsoftonline.com', 'https://login.live.com', 'https://login.windows.net',
+                       'https://device.login.microsoftonline.com', 'https://www.office.com')
+
+    def login(self, timeout=300, switch=False):
+        """弹出看得见的浏览器让你登录；能调通 D365 API 后保存登录状态并关窗，之后在后台运行。
+        switch=True：先把现在的登录清掉（Cookie 和 D365 / 微软登录页的网站数据），再让你用另一个账号登录。"""
         def fn():
             ctx = self._launch(headed=True)
             host = urlparse(self._base()).netloc
             page = ctx.pages[0] if ctx.pages else ctx.new_page()
+            if switch:
+                ctx.clear_cookies()
+                try:
+                    cdp = ctx.new_cdp_session(page)
+                    for origin in (self._base(),) + self.SIGN_IN_ORIGINS:
+                        cdp.send('Storage.clearDataForOrigin', {'origin': origin, 'storageTypes': 'all'})
+                    cdp.detach()
+                except Exception as e:  # noqa: BLE001 - 清不掉网站数据也没关系，Cookie 已经清了
+                    log.warning('清登录数据：%s', e)
             try:
                 page.goto(self.get_settings()['d365_url'], wait_until='domcontentloaded', timeout=60000)
             except Exception:  # noqa: BLE001

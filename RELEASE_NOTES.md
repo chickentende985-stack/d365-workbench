@@ -1,5 +1,10 @@
 **下载：** 下面的 `D365Workbench-windows.zip`，解压后双击 `D365Workbench\D365Workbench.exe`。
 
+v0.9.1
+- 顶部多了“切换账号”按钮（登录后在“D365 已登录”旁边）：退出现在的 D365 账号，弹出 Edge 窗口用另一个账号登录
+  - 有任务正在执行时不能切换，要先暂停
+  - EVI 的登录不受影响，要换 EVI 账号就在 EVI 那里重新登录
+
 v0.9.0
 - 设备变更可以改 **Whitelist Customer（白名单客户）** 和 **Large Customer（大客户）**：做单页、Excel（新列“Whitelist Customer”“Large Customer”，填 Yes / No）都能选，不选不改
 - 以前只看 Dealer / Service Dealer / 类型 / 质保，这几项都已经对了就跳过；现在白名单 / 大客户不一样也会建变更单
