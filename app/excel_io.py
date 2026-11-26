@@ -27,6 +27,8 @@ COLUMNS = [
     ('equipmentType', 'Equipment Type', ['设备类型', 'type'], 20, '设备变更用；不填不改'),
     ('warrantyValue', '质保数值', ['warranty policy value', 'warranty value'], 10, '设备变更用；不填不改'),
     ('warrantyMonth', '质保月数', ['warranty policy month', 'warranty month'], 10, '设备变更用；1～60，不填不改'),
+    ('whitelist', 'Whitelist Customer', ['白名单客户', '白名单', 'whitelist'], 12, '设备变更用；Yes / No，不填不改'),
+    ('largeCustomer', 'Large Customer', ['大客户', 'large customer'], 12, '设备变更用；Yes / No，不填不改'),
     ('note', '备注', ['note', 'notes', 'comment'], 20, '自己看的，工作台不用'),
 ]
 

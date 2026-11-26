@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         D365 PDI/防锈批量建单与附件上传
 // @namespace    local.sany.d365.batch
-// @version      0.10.5
+// @version      0.11.0
 // @description  按机号打开已有 PDI/防锈订单，自动上传附件、现场完工并提交审核；服务转移模式可创建 PDI；防锈派单模式可把卡在 Created 的防锈单派给指定人员；交机模式可新建或继续完成交机单；设备变更模式可粘贴机号批量新建并提交设备变更单。
 // @author       Local
 // @updateURL    https://gist.githubusercontent.com/chickentende985-stack/34a655254f34696ae299d67386621d95/raw/d365-pdi-rust-batch.user.js
@@ -22,7 +22,7 @@
   const APP_ID = 'd365-pdi-rust-batch';
   // 面板显示的版本号：优先读取脚本管理器提供的 GM_info，取不到时使用此常量。
   // 升级 @version 时同步修改此常量，publish.sh 会检查两者一致。
-  const SCRIPT_VERSION_FALLBACK = '0.10.5';
+  const SCRIPT_VERSION_FALLBACK = '0.11.0';
   const SCRIPT_VERSION = (() => {
     try {
       return typeof GM_info !== 'undefined' && GM_info?.script?.version
@@ -1369,11 +1369,18 @@
   const EC_STATUS_NEW = 10;
   const EC_STATUS_SUBMITTED = 20;
   const EC_CONFIG_KEY = `${APP_ID}:equipment-change-config:v1`;
-  const EC_FIELDS = ['ecDealer', 'ecDealerMain', 'ecEngineer', 'ecManager', 'ecHours', 'ecRemark', 'ecUsage', 'ecAddress', 'ecModel', 'ecType', 'ecWarrantyValue', 'ecWarrantyMonth'];
+  const EC_FIELDS = ['ecDealer', 'ecDealerMain', 'ecEngineer', 'ecManager', 'ecHours', 'ecRemark', 'ecUsage', 'ecAddress', 'ecModel', 'ecType', 'ecWarrantyValue', 'ecWarrantyMonth', 'ecWhitelist', 'ecLarge'];
   const EC_DEFAULTS = {
     ecDealer: 'C&O TRACTORS LTD', ecDealerMain: '', ecEngineer: '', ecManager: '', ecHours: '1', ecRemark: '',
-    ecUsage: 'Usable', ecAddress: 'uk', ecModel: 'sy', ecType: '', ecWarrantyValue: '', ecWarrantyMonth: '',
+    ecUsage: 'Usable', ecAddress: 'uk', ecModel: 'sy', ecType: '', ecWarrantyValue: '', ecWarrantyMonth: '', ecWhitelist: '', ecLarge: '',
   };
+  // 是 / 否 字段（Whitelist Customer、Large Customer）：选了就改成这个，不选就不改
+  const EC_FLAGS = [
+    ['whitelist', 'ecWhitelist', 'mcs_whitelistcustomer', 'Whitelist Customer'],
+    ['largeCustomer', 'ecLarge', 'mcs_largecustomer', 'Large Customer'],
+  ];
+  const ecFlagSet = (settings, key) => typeof settings?.[key] === 'boolean';
+  const yesNo = (v) => (v ? 'Yes' : 'No');
   // Equipment Type 选项（D365 里的值 → 名称）。系统里有两个都叫 Trial Machine，所以按数值选，不按名字。
   const EC_EQUIPMENT_TYPES = [
     [10, 'Host'], [20, 'Second-hand Machine'], [30, 'Sample Machine'], [40, 'Legal Machine'],
@@ -1489,8 +1496,9 @@
     };
     const warrantyValue = intOrNull(config.ecWarrantyValue, 'Warranty Policy Value', 0, 2147483647);
     const warrantyMonth = intOrNull(config.ecWarrantyMonth, 'Warranty Policy Month', 1, 60);
-    if (!dealerText && !mainDealerText && !config.ecType && warrantyValue === null && warrantyMonth === null) {
-      throw new Error('Dealer、Service Dealer、Equipment Type、质保都没填，没有要变更的内容');
+    const flags = Object.fromEntries(EC_FLAGS.map(([key, cfg]) => [key, config[cfg] === 'yes' ? true : (config[cfg] === 'no' ? false : null)]));
+    if (!dealerText && !mainDealerText && !config.ecType && warrantyValue === null && warrantyMonth === null && Object.values(flags).every((v) => v === null)) {
+      throw new Error('Dealer、Service Dealer、Equipment Type、质保、Whitelist / Large Customer 都没填，没有要变更的内容');
     }
     return {
       dealer: dealerText ? await resolveEcDealer(dealerText) : null,
@@ -1507,12 +1515,13 @@
       equipmentType: config.ecType ? Number(config.ecType) : null,
       warrantyValue,
       warrantyMonth,
+      ...flags,
     };
   }
 
   async function findEquipmentRecord(machineNo) {
     const filter = `mcs_name eq '${escapeODataString(machineNo)}'`;
-    const { data } = await api(`mcs_equipments?$select=mcs_equipmentid,mcs_name,_mcs_servicedealerid_value,_mcs_dealerid_value,mcs_equipmenttype,mcs_warrantypolicyvalue,mcs_warrantypolicymonth&$filter=${encodeURIComponent(filter)}&$top=2`,
+    const { data } = await api(`mcs_equipments?$select=mcs_equipmentid,mcs_name,_mcs_servicedealerid_value,_mcs_dealerid_value,mcs_equipmenttype,mcs_warrantypolicyvalue,mcs_warrantypolicymonth,mcs_whitelistcustomer,mcs_largecustomer&$filter=${encodeURIComponent(filter)}&$top=2`,
       { headers: { Prefer: FORMATTED_PREFER } });
     if (!data.value?.length) throw new Error(`D365 中未找到设备：${machineNo}`);
     if (data.value.length > 1) throw new Error(`D365 中存在多个同名设备：${machineNo}`);
@@ -1527,7 +1536,7 @@
   }
 
   async function readEcRequest(id) {
-    const { data } = await api(`${EC_SET}(${normalizeGuid(id)})?$select=mcs_name,mcs_changestatus,_mcs_servicedealerid_value,_mcs_dealerid_value,_mcs_personnel_30_value,_mcs_servicemanagerid_value,mcs_currentworkingtime,mcs_equipmenttype,mcs_warrantypolicyvalue,mcs_warrantypolicymonth`,
+    const { data } = await api(`${EC_SET}(${normalizeGuid(id)})?$select=mcs_name,mcs_changestatus,_mcs_servicedealerid_value,_mcs_dealerid_value,_mcs_personnel_30_value,_mcs_servicemanagerid_value,mcs_currentworkingtime,mcs_equipmenttype,mcs_warrantypolicyvalue,mcs_warrantypolicymonth,mcs_whitelistcustomer,mcs_largecustomer`,
       { headers: { Prefer: FORMATTED_PREFER } });
     return data;
   }
@@ -1609,6 +1618,9 @@
     }
     if (Number.isInteger(settings.warrantyValue) && setFormValue(page, 'mcs_warrantypolicyvalue', settings.warrantyValue)) changed.push(`Warranty Policy Value = ${settings.warrantyValue}`);
     if (Number.isInteger(settings.warrantyMonth) && setFormValue(page, 'mcs_warrantypolicymonth', settings.warrantyMonth)) changed.push(`Warranty Policy Month = ${settings.warrantyMonth}`);
+    for (const [key, , field, label] of EC_FLAGS) {
+      if (ecFlagSet(settings, key) && setFormValue(page, field, settings[key])) changed.push(`${label} = ${yesNo(settings[key])}`);
+    }
     return changed;
   }
 
@@ -1700,7 +1712,7 @@
   // 返回 'navigated' 表示已跳转页面（刷新后自动继续）。
   async function processEquipmentChangeItem(run, item, panel) {
     const settings = run.ecSettings;
-    if (!settings || (!settings.dealer?.id && !ecMainDealer(settings)?.id && !settings.equipmentType && !Number.isInteger(settings.warrantyValue) && !Number.isInteger(settings.warrantyMonth))) throw new Error('设备变更设置未确认，请清除任务后重新开始');
+    if (!settings || (!settings.dealer?.id && !ecMainDealer(settings)?.id && !settings.equipmentType && !Number.isInteger(settings.warrantyValue) && !Number.isInteger(settings.warrantyMonth) && !EC_FLAGS.some(([key]) => ecFlagSet(settings, key)))) throw new Error('设备变更设置未确认，请清除任务后重新开始');
 
     if (item.stage === 'ec-submitting' && item.ecRequestId) {
       const record = await readEcRequest(item.ecRequestId);
@@ -1718,13 +1730,15 @@
         && (!mainDealer || normalizeGuid(equipment._mcs_dealerid_value) === mainDealer.id);
       const valueOk = !Number.isInteger(settings.warrantyValue) || Number(equipment.mcs_warrantypolicyvalue) === settings.warrantyValue;
       const monthOk = !Number.isInteger(settings.warrantyMonth) || Number(equipment.mcs_warrantypolicymonth) === settings.warrantyMonth;
-      if (dealerOk && typeOk && valueOk && monthOk) {
+      const flagsOk = EC_FLAGS.every(([key, , field]) => !ecFlagSet(settings, key) || Boolean(equipment[field]) === settings[key]);
+      if (dealerOk && typeOk && valueOk && monthOk && flagsOk) {
         const done = [
           mainDealer && `Dealer 已经是 ${mainDealer.name}`,
           settings.dealer && `Service Dealer 已经是 ${settings.dealer.name}`,
           settings.equipmentType && `Equipment Type 已经是 ${ecTypeLabel(settings.equipmentType)}`,
           Number.isInteger(settings.warrantyValue) && `Warranty Policy Value 已经是 ${settings.warrantyValue}`,
           Number.isInteger(settings.warrantyMonth) && `Warranty Policy Month 已经是 ${settings.warrantyMonth}`,
+          ...EC_FLAGS.map(([key, , , label]) => ecFlagSet(settings, key) && `${label} 已经是 ${yesNo(settings[key])}`),
         ].filter(Boolean).join('、');
         skipDispatchItem(run, item, panel, `设备的 ${done}，不需要变更`);
         return 'skipped';
@@ -1800,6 +1814,11 @@
     for (const [key, field, label] of [['warrantyValue', 'mcs_warrantypolicyvalue', 'Warranty Policy Value'], ['warrantyMonth', 'mcs_warrantypolicymonth', 'Warranty Policy Month']]) {
       if (Number.isInteger(settings[key]) && Number(saved[field]) !== settings[key]) {
         throw new Error(`保存后 ${label} 是“${saved[field] ?? '空'}”，不是 ${settings[key]}，请检查表单`);
+      }
+    }
+    for (const [key, , field, label] of EC_FLAGS) {
+      if (ecFlagSet(settings, key) && Boolean(saved[field]) !== settings[key]) {
+        throw new Error(`保存后 ${label} 是“${yesNo(Boolean(saved[field]))}”，不是 ${yesNo(settings[key])}，请检查表单`);
       }
     }
 
@@ -5214,6 +5233,8 @@
               <label>Equipment Type（选了就改成这个；不改就选“保持原值”）</label><select id="ecType"><option value="">保持原值（不修改）</option><option value="10">Host</option><option value="20">Second-hand Machine</option><option value="30">Sample Machine</option><option value="40">Legal Machine</option><option value="50">Trial Machine（50）</option><option value="60">Spare Machine</option><option value="70">Rental Machine</option><option value="80">Trial Machine（80）</option></select>
               <label>Warranty Policy Value（质保数值，不改就留空）</label><input id="ecWarrantyValue" type="text" placeholder="例如 1">
               <label>Warranty Policy Month（质保月数 1～60，不改就留空）</label><input id="ecWarrantyMonth" type="text" placeholder="例如 12">
+              <label>Whitelist Customer（白名单客户）</label><select id="ecWhitelist"><option value="">保持原值（不修改）</option><option value="yes">Yes</option><option value="no">No</option></select>
+              <label>Large Customer（大客户）</label><select id="ecLarge"><option value="">保持原值（不修改）</option><option value="yes">Yes</option><option value="no">No</option></select>
               <div class="row"><button id="ecStart" class="primary">开始设备变更</button></div>
             </div>
             <div id="pasteWrap" hidden>
@@ -5736,6 +5757,7 @@
         `Change Remarks → ${settings.remark}`,
         `Equipment Type → ${settings.equipmentType ? ecTypeLabel(settings.equipmentType) : '保持原值'}`,
         `Warranty Policy Value → ${Number.isInteger(settings.warrantyValue) ? settings.warrantyValue : '保持原值'}，Warranty Policy Month → ${Number.isInteger(settings.warrantyMonth) ? settings.warrantyMonth : '保持原值'}`,
+        EC_FLAGS.map(([key, , , label]) => `${label} → ${ecFlagSet(settings, key) ? yesNo(settings[key]) : '保持原值'}`).join('，'),
         `为空时填：Usage = ${settings.usage || '不填'}，Address = ${settings.address || '不填'}，Model = ${settings.model || '不填'}`,
       ].join('\n');
       if (!confirm(`将为 ${items.length} 台设备新建（或继续未提交的）设备变更单并提交审批：\n\n${summary}\n\n确认继续？`)) return;

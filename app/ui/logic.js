@@ -364,9 +364,16 @@ function createLogic(transport) {
         const n = Number(rec.warrantyMonth);
         if (!Number.isInteger(n) || n < 1 || n > 60) errors.push(`质保月数“${rec.warrantyMonth}”要是 1～60 的整数`); else changes.push(`质保月数→${n}`);
       }
-      if (!changes.length && !errors.length) errors.push('设备变更没有要改的内容（Dealer、Service Dealer、Equipment Type、质保至少填一个）');
+      for (const [key, label] of [['whitelist', 'Whitelist Customer'], ['largeCustomer', 'Large Customer']]) {
+        if (!rec[key]) continue;
+        const t = norm(rec[key]);
+        if (['yes', 'y', 'true', '1', '是'].includes(t)) { rec[key] = 'yes'; changes.push(`${label}→Yes`); }
+        else if (['no', 'n', 'false', '0', '否'].includes(t)) { rec[key] = 'no'; changes.push(`${label}→No`); }
+        else errors.push(`${label}“${rec[key]}”要填 Yes 或 No`);
+      }
+      if (!changes.length && !errors.length) errors.push('设备变更没有要改的内容（Dealer、Service Dealer、Equipment Type、质保、Whitelist / Large Customer 至少填一个）');
       if (changes.length) info = [info, changes.join('，')].filter(Boolean).join('｜');
-    } else if (rec.dealer || rec.dealerMain || rec.equipmentType || rec.warrantyMonth || rec.warrantyValue) {
+    } else if (rec.dealer || rec.dealerMain || rec.equipmentType || rec.warrantyMonth || rec.warrantyValue || rec.whitelist || rec.largeCustomer) {
       warns.push('Dealer/类型/质保只在设备变更里用，这行会忽略');
     }
 
@@ -430,19 +437,21 @@ function createLogic(transport) {
           fields: { handoverDate: r.handoverDate || '' }, lines: [],
         });
       } else if (r.funcKey === 'equipment-change|pdi') {
-        const s = [r.dealerMain, r.dealer, r.engineer, r.manager, r.remark, r.equipmentTypeCode, r.warrantyValue, r.warrantyMonth];
+        const s = [r.dealerMain, r.dealer, r.engineer, r.manager, r.remark, r.equipmentTypeCode, r.warrantyValue, r.warrantyMonth, r.whitelist, r.largeCustomer];
         key = `${r.funcKey}|${JSON.stringify(s)}`;
         make = () => {
           // “不填不改”的项要明确清空；“不填用默认”的项（工程师、经理、备注）不送，保留面板里的默认值
           const fields = {
             ecDealerMain: r.dealerMain || '', ecDealer: r.dealer || '', ecType: r.equipmentTypeCode || '',
             ecWarrantyValue: r.warrantyValue || '', ecWarrantyMonth: r.warrantyMonth || '',
+            ecWhitelist: r.whitelist || '', ecLarge: r.largeCustomer || '',
           };
           if (r.engineer) fields.ecEngineer = r.engineer;
           if (r.manager) fields.ecManager = r.manager;
           if (r.remark) fields.ecRemark = r.remark;
           const parts = [r.dealerMainResolved && `Dealer ${r.dealerMainResolved}`, r.dealerResolved && `Service Dealer ${r.dealerResolved}`,
-            r.equipmentType && r.equipmentType, r.warrantyMonth && `质保 ${r.warrantyMonth} 月`].filter(Boolean);
+            r.equipmentType && r.equipmentType, r.warrantyMonth && `质保 ${r.warrantyMonth} 月`,
+            r.whitelist && `Whitelist ${r.whitelist === 'yes' ? 'Yes' : 'No'}`, r.largeCustomer && `Large Customer ${r.largeCustomer === 'yes' ? 'Yes' : 'No'}`].filter(Boolean);
           return { func: r.funcKey, title: `设备变更：${parts.join('，') || '按面板设置'}`, fields, lines: [] };
         };
       } else if (r.funcKey === 'transfer|pdi-shipment') {

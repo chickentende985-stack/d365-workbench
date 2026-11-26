@@ -12,7 +12,7 @@
  */
 (() => {
   'use strict';
-  const VERSION = '2.3.1';
+  const VERSION = '2.4.0';
   const ORDER = 'mcs_consultationorder';
   const ORDERS = 'mcs_consultationorders';
   const ZERO_GUID = '00000000-0000-0000-0000-000000000000';
@@ -1627,7 +1627,19 @@
   // =====================================================================
   const EC_SET = 'mcs_equipmentchangerequests';
   const EC_TYPES = { 10: 'Host', 20: 'Second-hand Machine', 30: 'Sample Machine', 40: 'Legal Machine', 50: 'Trial Machine', 60: 'Spare Machine', 70: 'Rental Machine', 80: 'Trial Machine' };
-  const EC_SELECT = 'mcs_name,mcs_changestatus,mcs_source,_mcs_servicedealerid_value,_mcs_dealerid_value,_mcs_personnel_30_value,_mcs_servicemanagerid_value,mcs_currentworkingtime,cr0c0_changeremark,mcs_equipmentusagestatus,mcs_equipmentaddress,mcs_modelmachinetype,mcs_equipmenttype,mcs_warrantypolicyvalue,mcs_warrantypolicymonth';
+  // 设备变更里的是 / 否字段：[设置里的名字, 面板字段, D365 字段, 显示名]
+  const EC_FLAGS = [
+    ['whitelist', 'ecWhitelist', 'mcs_whitelistcustomer', 'Whitelist Customer'],
+    ['largeCustomer', 'ecLarge', 'mcs_largecustomer', 'Large Customer'],
+  ];
+  function yesNoOr(v) {
+    const t = clean(v).toLowerCase();
+    if (['yes', 'y', 'true', '1', '是'].includes(t)) return true;
+    if (['no', 'n', 'false', '0', '否'].includes(t)) return false;
+    if (t) throw new Error(`“${v}”看不懂，Whitelist / Large Customer 要填 Yes 或 No`);
+    return null;
+  }
+  const EC_SELECT = 'mcs_name,mcs_changestatus,mcs_source,_mcs_servicedealerid_value,_mcs_dealerid_value,_mcs_personnel_30_value,_mcs_servicemanagerid_value,mcs_currentworkingtime,cr0c0_changeremark,mcs_equipmentusagestatus,mcs_equipmentaddress,mcs_modelmachinetype,mcs_equipmenttype,mcs_warrantypolicyvalue,mcs_warrantypolicymonth,mcs_whitelistcustomer,mcs_largecustomer';
   const containsEveryWord = (field, text) => `(${String(text || '').split(/\s+/).filter(Boolean).map((w) => `contains(${field},'${esc(w)}')`).join(' and ')})`;
   const normText = (v) => String(v || '').replace(/\s+/g, ' ').trim().toLowerCase();
 
@@ -1680,11 +1692,13 @@
       type: f.ecType ? Number(f.ecType) : null,
       warrantyValue: intOr(f.ecWarrantyValue, 'Warranty Policy Value', 0, 2147483647),
       warrantyMonth: intOr(f.ecWarrantyMonth, 'Warranty Policy Month', 1, 60),
+      // 是 / 否：'yes' / 'no' 就改，空着不改
+      ...Object.fromEntries(EC_FLAGS.map(([key, cfg]) => [key, yesNoOr(f[cfg])])),
     };
     if (!Number.isFinite(s.hours) || s.hours < 0) throw new Error('Current working time 要填数字');
     if (!s.remark) throw new Error('没填 Change Remarks（可以在工作台“设置”里填默认值）');
-    if (!s.dealer && !s.mainDealer && !s.type && s.warrantyValue === null && s.warrantyMonth === null) {
-      throw new Error('Dealer、Service Dealer、Equipment Type、质保都没填，没有要变更的内容');
+    if (!s.dealer && !s.mainDealer && !s.type && s.warrantyValue === null && s.warrantyMonth === null && EC_FLAGS.every(([key]) => s[key] == null)) {
+      throw new Error('Dealer、Service Dealer、Equipment Type、质保、Whitelist / Large Customer 都没填，没有要变更的内容');
     }
     item.ec = s;
     return s;
@@ -1693,7 +1707,7 @@
   const equipmentChange = {
     async resolve(item, ctx) {
       const s = await ecSettings(item, ctx);
-      const rows = await query('mcs_equipments', 'mcs_equipmentid,mcs_name,_mcs_servicedealerid_value,_mcs_dealerid_value,mcs_equipmenttype,mcs_warrantypolicyvalue,mcs_warrantypolicymonth',
+      const rows = await query('mcs_equipments', 'mcs_equipmentid,mcs_name,_mcs_servicedealerid_value,_mcs_dealerid_value,mcs_equipmenttype,mcs_warrantypolicyvalue,mcs_warrantypolicymonth,mcs_whitelistcustomer,mcs_largecustomer',
         `mcs_name eq '${esc(item.machineNo)}'`, '&$top=2');
       if (rows.length !== 1) throw new Skip(rows.length ? `D365 里有多台同名设备 ${item.machineNo}` : `D365 里找不到设备 ${item.machineNo}`);
       const eq = rows[0];
@@ -1702,7 +1716,8 @@
         && (!s.mainDealer || guid(eq._mcs_dealerid_value) === s.mainDealer.id)
         && (!s.type || Number(eq.mcs_equipmenttype) === s.type)
         && (s.warrantyValue === null || Number(eq.mcs_warrantypolicyvalue) === s.warrantyValue)
-        && (s.warrantyMonth === null || Number(eq.mcs_warrantypolicymonth) === s.warrantyMonth);
+        && (s.warrantyMonth === null || Number(eq.mcs_warrantypolicymonth) === s.warrantyMonth)
+        && EC_FLAGS.every(([key, , field]) => s[key] == null || Boolean(eq[field]) === s[key]);
       if (ok) throw new Skip('设备上已经是要改成的值了，不需要变更');
       const reqs = await query(EC_SET, 'mcs_equipmentchangerequestid,mcs_name,mcs_changestatus,createdon',
         `_mcs_equipment_value eq ${item.equipmentId} and statecode eq 0`, '&$orderby=createdon desc&$top=50');
@@ -1752,6 +1767,9 @@
       if (s.type && Number(r.mcs_equipmenttype) !== s.type) { payload.mcs_equipmenttype = s.type; ch.push(`Equipment Type = ${EC_TYPES[s.type]}`); }
       if (s.warrantyValue !== null && Number(r.mcs_warrantypolicyvalue) !== s.warrantyValue) { payload.mcs_warrantypolicyvalue = s.warrantyValue; ch.push(`Warranty Policy Value = ${s.warrantyValue}`); }
       if (s.warrantyMonth !== null && Number(r.mcs_warrantypolicymonth) !== s.warrantyMonth) { payload.mcs_warrantypolicymonth = s.warrantyMonth; ch.push(`Warranty Policy Month = ${s.warrantyMonth}`); }
+      for (const [key, , field, label] of EC_FLAGS) {
+        if (s[key] != null && Boolean(r[field]) !== s[key]) { payload[field] = s[key]; ch.push(`${label} = ${s[key] ? 'Yes' : 'No'}`); }
+      }
       if (!Object.keys(payload).length) return ctx.log('字段已经是要改成的值');
       await ctx.write(`写入 ${ch.join('；')}`, () => api(`${EC_SET}(${item.ecId})`, { method: 'PATCH', headers: { 'If-Match': '*' }, body: payload }));
       if (ctx.dry) return;
@@ -1763,6 +1781,9 @@
       if (s.type && Number(saved.mcs_equipmenttype) !== s.type) bad.push(`Equipment Type 是“${fmt(saved, 'mcs_equipmenttype') || '空'}”`);
       if (s.warrantyValue !== null && Number(saved.mcs_warrantypolicyvalue) !== s.warrantyValue) bad.push(`Warranty Policy Value 是 ${saved.mcs_warrantypolicyvalue ?? '空'}`);
       if (s.warrantyMonth !== null && Number(saved.mcs_warrantypolicymonth) !== s.warrantyMonth) bad.push(`Warranty Policy Month 是 ${saved.mcs_warrantypolicymonth ?? '空'}`);
+      for (const [key, , field, label] of EC_FLAGS) {
+        if (s[key] != null && Boolean(saved[field]) !== s[key]) bad.push(`${label} 是 ${saved[field] ? 'Yes' : 'No'}`);
+      }
       if (bad.length) throw new Error(`写入后 ${bad.join('、')}，和要改的不一样，请到设备变更单 ${item.orderNumber} 上检查`);
       ctx.log(`已写入 ${ch.join('；')}`);
     },
