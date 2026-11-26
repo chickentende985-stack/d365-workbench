@@ -328,13 +328,14 @@
       Object.assign(fields, {
         ecDealerMain: $('qEcDealerMain').value.trim(), ecDealer: $('qEcDealer').value.trim(), ecType: $('qEcType').value,
         ecWarrantyValue: $('qEcWarrantyValue').value.trim(), ecWarrantyMonth: $('qEcWarrantyMonth').value.trim(),
+        ecWhitelist: $('qEcWhitelist').value, ecLarge: $('qEcLarge').value,
       });
       for (const [id, key] of [['qEcEngineer', 'ecEngineer'], ['qEcManager', 'ecManager'], ['qEcRemark', 'ecRemark']]) {
         const v = $(id).value.trim();
         if (v) fields[key] = v;
       }
-      if (!fields.ecDealerMain && !fields.ecDealer && !fields.ecType && !fields.ecWarrantyValue && !fields.ecWarrantyMonth) {
-        throw new Error('Dealer、Service Dealer、Equipment Type、质保都没填，没有要变更的内容');
+      if (!fields.ecDealerMain && !fields.ecDealer && !fields.ecType && !fields.ecWarrantyValue && !fields.ecWarrantyMonth && !fields.ecWhitelist && !fields.ecLarge) {
+        throw new Error('Dealer、Service Dealer、Equipment Type、质保、Whitelist / Large Customer 都没填，没有要变更的内容');
       }
       const m = fields.ecWarrantyMonth;
       if (m && !(/^\d+$/.test(m) && Number(m) >= 1 && Number(m) <= 60)) throw new Error('Warranty Policy Month 要填 1～60 的整数');

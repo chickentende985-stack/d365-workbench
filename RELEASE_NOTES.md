@@ -1,5 +1,10 @@
 **下载：** 下面的 `D365Workbench-windows.zip`，解压后双击 `D365Workbench\D365Workbench.exe`。
 
+v0.9.0
+- 设备变更可以改 **Whitelist Customer（白名单客户）** 和 **Large Customer（大客户）**：做单页、Excel（新列“Whitelist Customer”“Large Customer”，填 Yes / No）都能选，不选不改
+- 以前只看 Dealer / Service Dealer / 类型 / 质保，这几项都已经对了就跳过；现在白名单 / 大客户不一样也会建变更单
+- 浏览器脚本同步到 0.11.0（设备变更面板多了这两个选项）
+
 v0.8.1
 - 整机远照上认出完整日期就算有时间地点（Windows 文字识别有时会漏掉时刻）；铭牌还是要日期和时刻都有
 
